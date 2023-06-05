@@ -3,7 +3,7 @@
 
 ### 커스텀 ###
 input/*
-.[^gitignore]+
+.[^gitignore]*
 
 ### Git ###
 # Created by git for backups. To disable backups in Git:
