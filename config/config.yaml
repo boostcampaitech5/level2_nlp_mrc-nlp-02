@@ -1,0 +1,22 @@
+실험명: 실헐명
+seed: 42
+model:
+  model_name: 모델이름
+  num_attention_heads: 12
+  attention_probs_dropout_prob: 0.1
+  num_hidden_layers: 12
+  hidden_dropout_prob: 0.1
+tokenizer:
+  max_seq_length: 384
+  pad_to_max_length: False
+  doc_stride: 128
+  max_answer_length: 30
+trainer:
+  overwrite_cache: False
+  eval_retrieval: True
+  num_clusters: 64
+  top_k_retrieval: 10
+  use_faiss: False
+wandb:
+  id: 아이디
+  project: 프로젝트
