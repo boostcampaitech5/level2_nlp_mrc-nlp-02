@@ -200,6 +200,7 @@ if __name__ == "__main__":
     printer.done()
 
     # predict 단계
+    training_args.do_eval = False
     training_args.do_predict = True
     training_args.output_dir = save_path + '/test'
     test_dataset = load_from_disk('input/data/test_dataset')

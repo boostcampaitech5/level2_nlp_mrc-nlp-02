@@ -1,7 +1,8 @@
-실험명: 실헐명
+실험명: 실험명
 seed: 42
+emd_name: sparse_embedding.bin
 model:
-  model_name: 모델이름
+  model_name: klue/bert-base
   num_attention_heads: 12
   attention_probs_dropout_prob: 0.1
   num_hidden_layers: 12
@@ -11,7 +12,7 @@ tokenizer:
   pad_to_max_length: False
   doc_stride: 128
   max_answer_length: 30
-trainer:
+option:
   overwrite_cache: False
   eval_retrieval: True
   num_clusters: 64
@@ -19,4 +20,4 @@ trainer:
   use_faiss: False
 wandb:
   id: 아이디
-  project: 프로젝트
+  project: 프로젝트명
