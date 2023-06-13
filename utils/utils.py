@@ -28,6 +28,8 @@ def get_folder_name(CFG):
     save_path = f"./results/{folder_name}"
     CFG['save_path'] = save_path
     os.makedirs(save_path)
+    os.makedirs(save_path + '/train')
+    os.makedirs(save_path + '/test')
 
     return folder_name, save_path
 

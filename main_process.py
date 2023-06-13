@@ -1,8 +1,16 @@
+### 외부 라이브러리 ###
 import os
 import yaml
 import wandb
+import pandas as pd
 
-from datasets import load_from_disk
+from datasets import (
+    Dataset,
+    DatasetDict,
+    Features,
+    Value,
+    load_from_disk
+)
 from transformers import (
     AutoConfig,
     AutoModelForQuestionAnswering,
@@ -12,14 +20,41 @@ from transformers import (
     TrainingArguments,
     set_seed
 )
+from tqdm.auto import tqdm
 
-### 우리가 만든 모듈 ###
+### 우리가 만든 라이브러리 ###
 from utils import utils, data_controller
 from input.code.trainer_qa import QuestionAnsweringTrainer
 from input.code.utils_qa import postprocess_qa_predictions
+from input.code.retrieval import SparseRetrieval
 
 import warnings
 warnings.filterwarnings('ignore')
+
+
+def post_processing_function(examples, features, predictions, training_args):
+    # Post-processing: start logits과 end logits을 original context의 정답과 match시킵니다.
+    predictions = postprocess_qa_predictions(
+        examples=examples,
+        features=features,
+        predictions=predictions,
+        max_answer_length=CFG['tokenizer']['max_answer_length'],
+        output_dir=training_args.output_dir,
+    )
+    # Metric을 구할 수 있도록 Format을 맞춰줍니다.
+    formatted_predictions = [
+        {"id": k, "prediction_text": v} for k, v in predictions.items()
+    ]
+    if training_args.do_predict:
+        return formatted_predictions
+    elif training_args.do_eval:
+        references = [
+            {"id": ex["id"], "answers": ex['answers']}
+            for ex in train_dataset["validation"]
+        ]
+        return EvalPrediction(
+            predictions=formatted_predictions, label_ids=references
+        )
 
 
 ### MAIN ###
@@ -49,7 +84,6 @@ if __name__ == "__main__":
     # 데이터셋 가져오기
     printer.start('train/test 데이터셋 가져오기')
     train_dataset = load_from_disk('input/data/train_dataset')
-    test_dataset = load_from_disk('input/data/test_dataset')
     printer.done()
     # Trainer의 Args 객체 가져오기
     printer.start('Trainer Args 가져오기')
@@ -59,12 +93,14 @@ if __name__ == "__main__":
     # config, tokenizer, model 가져오기
     printer.start('HuggingFace에서 모델 및 토크나이저 가져오기')
     config = AutoConfig.from_pretrained(CFG['model']['model_name'])
+    for key in ['num_attention_heads', 'attention_probs_dropout_prob', 'num_hidden_layers', 'hidden_dropout_prob']:
+        config[key] = CFG['model'][key]
     tokenizer = AutoTokenizer.from_pretrained(CFG['model']['model_name'], use_fast=True) # rust tokenizer if use_fast == True else python tokenizer
     model = AutoModelForQuestionAnswering.from_pretrained(CFG['model']['model_name'], config=config)
     printer.done()
 
     # 토큰화를 위한 파라미터 설정
-    printer.start('토큰화를 위한 파라밈터 설정')
+    printer.start('토큰화를 위한 파라미터 설정')
     CFG['tokenizer']['max_seq_length'] = min(CFG['tokenizer']['max_seq_length'],
                                              tokenizer.model_max_length)
     fn_kwargs = {
@@ -84,6 +120,7 @@ if __name__ == "__main__":
 
     # 데이터 토큰나이징
     printer.start("train 토크나이징")
+    fn_kwargs['column_names']= train_data.column_names
     train_data = train_data.map(
         data_controller.train_tokenizing,
         batched=True,
@@ -94,6 +131,7 @@ if __name__ == "__main__":
     )
     printer.done()
     printer.start("val 토크나이징")
+    fn_kwargs['column_names']= val_data.column_names
     val_data = val_data.map(
         data_controller.val_tokenizing,
         batched=True,
@@ -113,30 +151,6 @@ if __name__ == "__main__":
 
     # Trainer 초기화
     printer.start("Trainer 초기화")
-    def post_processing_function(examples, features, predictions, training_args):
-        # Post-processing: start logits과 end logits을 original context의 정답과 match시킵니다.
-        predictions = postprocess_qa_predictions(
-            examples=examples,
-            features=features,
-            predictions=predictions,
-            max_answer_length=CFG['tokenizer']['max_answer_length'],
-            output_dir=training_args.output_dir,
-        )
-        # Metric을 구할 수 있도록 Format을 맞춰줍니다.
-        formatted_predictions = [
-            {"id": k, "prediction_text": v} for k, v in predictions.items()
-        ]
-        if training_args.do_predict:
-            return formatted_predictions
-        elif training_args.do_eval:
-            references = [
-                {"id": ex["id"], "answers": ex['answers']}
-                for ex in train_dataset["validation"]
-            ]
-            return EvalPrediction(
-                predictions=formatted_predictions, label_ids=references
-            )
-
     trainer = QuestionAnsweringTrainer(
         model=model,
         args=training_args,
@@ -177,14 +191,70 @@ if __name__ == "__main__":
 
     # val 평가
     printer.start("val 평가")
-    if training_args.do_eval:
-        metrics = trainer.evaluate()
+    metrics = trainer.evaluate()
 
-        metrics["val_samples"] = len(val_data)
+    metrics["val_samples"] = len(val_data)
 
-        trainer.log_metrics("val", metrics)
-        trainer.save_metrics("val", metrics)
+    trainer.log_metrics("val", metrics)
+    trainer.save_metrics("val", metrics)
     printer.done()
 
     # predict 단계
+    training_args.do_predict = True
     training_args.output_dir = save_path + '/test'
+    test_dataset = load_from_disk('input/data/test_dataset')
+    
+    # retrieval 단계
+    retriever = SparseRetrieval(
+        tokenize_fn=tokenizer, data_path='input/data', 
+    )
+    retriever.get_sparse_embedding()
+
+    printer.start("top-k 추출하기")
+    df = retriever.retrieve(test_dataset['validation'], topk=CFG['option']['top_k_retrieval'])
+    printer.done()
+
+    printer.start("context가 추가된 test dataset 선언")
+    f = Features(
+            {
+                "context": Value(dtype="string", id=None),
+                "id": Value(dtype="string", id=None),
+                "question": Value(dtype="string", id=None),
+            }
+        )
+    test_dataset = DatasetDict({"validation": Dataset.from_pandas(df, features=f)})
+    printer.done()
+
+    # reader 단계
+    test_data = test_dataset['validation']
+    printer.start("test 토크나이징")
+    fn_kwargs['column_names']= test_data.column_names
+    test_data = test_data.map(
+        data_controller.val_tokenizing,
+        batched=True,
+        num_proc=None,
+        remove_columns=test_data.column_names,
+        load_from_cache_file=not False,
+        fn_kwargs=fn_kwargs
+    )
+    printer.done()
+    printer.start("test를 위한 trainer 초기화")
+    # Trainer 초기화
+    trainer = QuestionAnsweringTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=None,
+        eval_dataset=test_data,
+        eval_examples=test_dataset["validation"],
+        tokenizer=tokenizer,
+        data_collator=data_collator,
+        post_process_function=post_processing_function,
+        compute_metrics=utils.compute_metrics,
+    )
+    printer.done()
+    printer.start("predict 수행중...")
+    predictions = trainer.predict(
+        test_dataset=test_data,
+        test_examples=test_dataset['validation']
+    )
+    printer.done()
