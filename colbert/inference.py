@@ -85,8 +85,8 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
         if training_args.do_eval:
             total_score_for_eval = []
             for num in range(0, 4000, 400):
-                total_score_for_eval.append((dot_prod_scores_eval:=model.get_score(q_emb[num : num+400], batched_p_embs, eval=True)))
-                print(f'from {num} to {num+400}:', dot_prod_scores_eval.size())
+                total_score_for_eval.append((dot_prod_scores_eval:=model.get_score(q_emb[num : num+4000], batched_p_embs, eval=True)))
+                print(f'from {num} to {num+4000}:', dot_prod_scores_eval.size())
             dot_product_scores = torch.cat(total_score_for_eval, dim=0)
             print(dot_prod_scores.size())
             

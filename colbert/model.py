@@ -66,16 +66,16 @@ class ColbertModel(BertPreTrainedModel):
                     )  # (batch_size, hidden_size, p_sequence_length)
                     q_sequence_output = Q.view(
                         Q.shape[0], 1, -1, self.dim
-                    )  # (batch_size, 1, q_sequence_length, hidden_size)
+                    )  # (num_whole_q, 1, q_sequence_length, hidden_size)
                     dot_prod = torch.matmul(
                         q_sequence_output, p_seqeunce_output
-                    )  # (batch_size, batch_size + hard_negative_size, q_sequence_length, p_seqence_length)
+                    )  # (num_whole_q, batch_size, q_sequence_length, p_seqence_length)
                     max_dot_prod_score = torch.max(dot_prod, dim=3)[
                         0
-                    ]   # (batch_size, batch_size + hard_negative_size, q_sequnce_length)
-                    score = torch.sum(max_dot_prod_score, dim=2)  # (batch_size, batch_size + hard_negative_size)
+                    ]   # (num_whole_q, batch_size, q_sequnce_length)
+                    score = torch.sum(max_dot_prod_score, dim=2)  # (num_whole_q, batch_size)
                     final_score = torch.cat([final_score, score], dim=1)
-                print(final_score.size())
+                print(final_score.size()) #(num_whole_q, num_whole_p)
                 return final_score
 
         else:
