@@ -8,6 +8,7 @@ input/*
 .netrc
 results/*
 config/use/*
+retrieval/*.bin
 
 ### Git ###
 # Created by git for backups. To disable backups in Git:
