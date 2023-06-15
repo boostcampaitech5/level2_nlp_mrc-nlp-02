@@ -62,6 +62,9 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
 
             q_seqs_val = tokenize_colbert(query, ret_tokenizer, corpus="query").to("cuda")
             q_emb = model.query(**q_seqs_val).to("cpu")
+            
+            del q_seqs_val
+            
             print(q_emb.size())
 
             print("Start passage embedding.. ....")
@@ -69,8 +72,11 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
             for step, p in enumerate(tqdm(context)):
                 p = tokenize_colbert(p, ret_tokenizer, corpus="doc").to("cuda")
                 p_emb = model.doc(**p).to("cpu").numpy()
+                
+                del p
+                
                 p_embs.append(p_emb)
-                if (step + 1) % 200 == 0:
+                if (step + 1) % 64 == 0:
                     batched_p_embs.append(p_embs)
                     p_embs = []
             batched_p_embs.append(p_embs)
@@ -84,7 +90,6 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
         if training_args.do_eval:
             torch.save(rank, f"{model_args.save_ColBERT_rank_path}_eval.pth")
         else:
-
             torch.save(rank, f"{model_args.save_ColBERT_rank_path}_predict.pth")
     print(rank.size())
     print(length)

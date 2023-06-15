@@ -17,7 +17,11 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
+"""
 
+마지막 연산 단계에서 PAD와 punctuation을 걸러내는 filter는 아직 미구현 되어있음.
+
+"""
 class ColbertModel(BertPreTrainedModel):
     def __init__(self, config):
         super(ColbertModel, self).__init__(config)
@@ -59,17 +63,17 @@ class ColbertModel(BertPreTrainedModel):
                     print(D_batch.shape)
                     p_seqeunce_output = D_batch.transpose(
                         1, 2
-                    )  # (batch_size,hidden_size,p_sequence_length)
+                    )  # (batch_size, hidden_size, p_sequence_length)
                     q_sequence_output = Q.view(
                         Q.shape[0], 1, -1, self.dim
                     )  # (batch_size, 1, q_sequence_length, hidden_size)
                     dot_prod = torch.matmul(
                         q_sequence_output, p_seqeunce_output
-                    )  # (batch_size,batch_size, q_sequence_length, p_seqence_length)
+                    )  # (batch_size, batch_size + hard_negative_size, q_sequence_length, p_seqence_length)
                     max_dot_prod_score = torch.max(dot_prod, dim=3)[
                         0
-                    ]  # (batch_size,batch_size,q_sequnce_length)
-                    score = torch.sum(max_dot_prod_score, dim=2)  # (batch_size,batch_size)
+                    ]   # (batch_size, batch_size + hard_negative_size, q_sequnce_length)
+                    score = torch.sum(max_dot_prod_score, dim=2)  # (batch_size, batch_size + hard_negative_size)
                     final_score = torch.cat([final_score, score], dim=1)
                 print(final_score.size())
                 return final_score
@@ -84,16 +88,16 @@ class ColbertModel(BertPreTrainedModel):
                     n_seqeunce_output = N.transpose(1, 2)
                     p_seqeunce_output = torch.cat(
                         [p_seqeunce_output, n_seqeunce_output], dim=0
-                    )  # (hard_negative_size, hidden_size, p_sequence_length)
+                    )  # (batch_size,+ hard_negative_size, hidden_size, p_sequence_length)
                 q_sequence_output = Q.view(
                     Q.shape[0], 1, -1, self.dim
                 )  # (batch_size, 1, q_sequence_length, hidden_size)
                 dot_prod = torch.matmul(
                     q_sequence_output, p_seqeunce_output
-                )  # (batch_size,batch_size, q_sequence_length, p_seqence_length)
+                )  # (batch_size, batch_size + hard_negative_size, q_sequence_length, p_seqence_length)
                 max_dot_prod_score = torch.max(dot_prod, dim=3)[
                     0
-                ]  # (batch_size,batch_size,q_sequnce_length)
-                final_score = torch.sum(max_dot_prod_score, dim=2)  # (batch_size,batch_size)
+                ]  # (batch_size, batch_size + hard_negative_size, q_sequnce_length)
+                final_score = torch.sum(max_dot_prod_score, dim=2)  # (batch_size, batch_size + hard_negative_size)
 
                 return final_score
