@@ -1,6 +1,7 @@
 실험명: 실험명
 seed: 42
 retrieval_name: SparseTFIDF
+retrieval_fuzz: True
 retrieval_list:
   SparseTFIDF: SparseTFIDF
 model:

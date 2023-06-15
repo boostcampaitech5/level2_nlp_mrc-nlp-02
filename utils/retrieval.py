@@ -12,6 +12,7 @@ from datasets import Dataset, concatenate_datasets, load_from_disk
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm.auto import tqdm
 from rank_bm25 import BM25Okapi
+from fuzzywuzzy import fuzz
 
 
 @contextmanager
