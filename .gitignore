@@ -9,6 +9,9 @@ input/*
 results/*
 config/use/*
 retrieval/*.bin
+colbert/best_model/*
+colbert/bm25rank_dict.pickle
+force_inference.ipynb
 
 ### Git ###
 # Created by git for backups. To disable backups in Git:
