@@ -30,8 +30,8 @@ def main():
     set_seed(42)
 
     batch_size = 16
-    load_weight_path = "./best_model_aug/colbert_epoch10.pth"
-    data_path = "./input/data/train_dataset"
+    load_weight_path = None #"./best_model_aug/colbert_epoch10.pth"
+    data_path = "../input/data/train_dataset"
 
     lr = 4e-6
     args = TrainingArguments(
@@ -54,32 +54,34 @@ def main():
     train_dataset = train_dataset.reset_index(drop=True)
 
     # bm25 hard negative
-    with open("tfidffuzzrank_dict.pickle", "rb") as fr:
-        tfidffuzzrank_dict = pickle.load(fr)
+    with open("bm25rank_dict.pickle", "rb") as fr:
+        bm25rank_dict = pickle.load(fr)
 
     # hard nagative sample이 담긴 list
     # 지금 row의 ['id']에는 train_dataset의 한 샘플에 대한 id가 들어있고, (ex. mrc-1-000067)
     # 그 id를 key로 하고, value로 topk개의 bm25 ranked wiki 문서들이 들어있음
     # 그 중, bm25가 높음 wikidata임에도 row['answers']['text'], 즉 정답이 포함되어있지 않다면
     # hard negative
-    tfidffuzzrank_contexts = []
-    topk = len(tfidffuzzrank_dict.values[0])
-    for idx, row in list(train_dataset.iterrows()):
+    bm25rank_contexts = []
+    topk = len(eval(list(bm25rank_dict.values())[0]))
+    for idx, row in tqdm(list(train_dataset.iterrows()), desc="sampling hard negatives..."):
         pointer = 0
-        if row['answers']['text'] not in tfidffuzzrank_dict[row["id"]][pointer]:
-            tfidffuzzrank_contexts.append(tfidffuzzrank_dict[row["id"]][0])
-        else:
-            pointer += 1
-            if pointer == topk:
-                print(row)
-                raise IndexError('check train.py 74 line')
-
+        flag = False
+        while pointer < topk:
+            if row['answers']['text'][0] not in (hard_neg := eval(bm25rank_dict[row["id"]])[pointer]):
+                bm25rank_contexts.append(hard_neg)
+                flag = True
+                break
+            pointer += 1 
+        if not flag:
+            raise IndexError(f'{row["id"]} don\'t have enough samples for hard negative.\ncheck colbert train.py')
+    breakpoint()
     train_dataset = set_columns(train_dataset)
 
     print("dataset tokenizing.......")
     # 토크나이저
     train_context, train_query = tokenize_colbert(train_dataset, tokenizer, corpus="both")
-    train_bm25 = tokenize_colbert(tfidffuzzrank_contexts, tokenizer, corpus="bm25_hard")
+    train_bm25 = tokenize_colbert(bm25rank_contexts, tokenizer, corpus="bm25_hard")
 
     train_dataset = TensorDataset(
         train_context["input_ids"],
