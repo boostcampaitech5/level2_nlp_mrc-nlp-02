@@ -43,7 +43,7 @@ def tokenize_colbert(dataset, tokenizer, corpus):
             preprocessed_data.append("[Q] " + query)
 
         tokenized_query = tokenizer(
-            preprocessed_data, return_tensors="pt", padding=True, truncation=True, max_length=64
+            preprocessed_data, return_tensors="pt", padding='max_length', truncation=True, max_length=64
         )
         mask_token_ids = tokenized_query["input_ids"] == tokenizer.pad_token_id
         tokenized_query["input_ids"] = tokenized_query["input_ids"].where(~mask_token_ids, tokenizer.mask_token_id)

@@ -58,9 +58,10 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
         batched_p_embs = []
 
         with torch.no_grad():
-            model.eval
-
+            model.eval()
+            
             q_seqs_val = tokenize_colbert(query, ret_tokenizer, corpus="query").to("cuda")
+            print(len(q_seqs_val['input_ids'][0]))
             q_emb = model.query(**q_seqs_val).to("cpu")
             
             del q_seqs_val
@@ -80,9 +81,18 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
                     batched_p_embs.append(p_embs)
                     p_embs = []
             batched_p_embs.append(p_embs)
-
-        dot_prod_scores = model.get_score(q_emb, batched_p_embs, eval=True)
-        print(dot_prod_scores.size())
+            
+        if training_args.do_eval:
+            total_score_for_eval = []
+            for num in range(0, 4000, 400):
+                total_score_for_eval.append((dot_prod_scores_eval:=model.get_score(q_emb[num : num+400], batched_p_embs, eval=True)))
+                print(f'from {num} to {num+400}:', dot_prod_scores_eval.size())
+            dot_product_scores = torch.cat(total_score_for_eval, dim=0)
+            print(dot_prod_scores.size())
+            
+        else:
+            dot_prod_scores = model.get_score(q_emb, batched_p_embs, eval=True)
+            print(dot_prod_scores.size())
 
         rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
         print(dot_prod_scores)
