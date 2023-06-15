@@ -1,12 +1,10 @@
-# baseline : https://github.com/boostcampaitech3/level2-mrc-level2-nlp-11
-
-
 import json
 import torch.nn.functional as F
 from model import *
 from tokenizer import *
 import logging
 import sys
+import os
 from typing import Callable, Dict, List, NoReturn, Tuple
 import torch
 import numpy as np
@@ -14,12 +12,13 @@ from transformers import AutoTokenizer, set_seed
 from datasets import load_from_disk
 
 def main():
-    epoch = 10
+    epoch = 6
     MODEL_NAME = "klue/bert-base"
     set_seed(42)
-    datasets = load_from_disk("../data/train_dataset")
+    datasets = load_from_disk("../input/data/train_dataset")
+    train_dataset = pd.DataFrame(datasets["train"])
     val_dataset = pd.DataFrame(datasets["validation"])
-    
+    val_dataset = pd.concat([train_dataset, val_dataset])
 
     val_dataset = val_dataset.reset_index(drop=True)
     val_dataset = set_columns(val_dataset)
@@ -30,7 +29,7 @@ def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    model.load_state_dict(torch.load(f"./best_model_aug/colbert_epoch10.pth"))
+    model.load_state_dict(torch.load(f"./best_model/compare_colbert_epoch6.pth"))
 
     print("opening wiki passage...")
     with open("../data/wikipedia_documents.json", "r", encoding="utf-8") as f:
@@ -92,4 +91,5 @@ def main():
 
 
 if __name__ == "__main__":
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
     main()

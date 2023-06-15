@@ -18,15 +18,12 @@ from transformers import (
 from .tokenizer import *
 from .model import *
 
-# baseline : https://github.com/boostcampaitech3/level2-mrc-level2-nlp-11
-
-
 def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
     test_dataset = datasets["validation"].flatten_indices().to_pandas()
     MODEL_NAME = "klue/bert-base"
 
     print("opening wiki passage...")
-    with open(".input/data/wikipedia_documents.json", "r", encoding="utf-8") as f:
+    with open("/opt/ml/input/data/wikipedia_documents.json", "r", encoding="utf-8") as f:
         wiki = json.load(f)
     context = list(dict.fromkeys([v["text"] for v in wiki.values()]))
     print("wiki loaded!!!")
@@ -140,5 +137,5 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
     else:
         raise ValueError
 
-    complete_datasets = DatasetDict({"validation": Dataset.from_pandas(df, features=f)})
-    return complete_datasets
+    # complete_datasets = DatasetDict({"validation": Dataset.from_pandas(df, features=f)})
+    return df
