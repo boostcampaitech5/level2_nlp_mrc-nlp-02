@@ -1,6 +1,8 @@
 실험명: 실험명
 seed: 42
-emd_name: sparse_embedding.bin
+retrieval_name: SparseTFIDF
+retrieval_list:
+  SparseTFIDF: SparseTFIDF
 model:
   model_name: klue/bert-base
   num_attention_heads: 12
@@ -18,6 +20,7 @@ option:
   num_clusters: 64
   top_k_retrieval: 10
   use_faiss: False
+  batch_size: 8
 wandb:
-  id: 아이디
-  project: 프로젝트명
+  id: gibum1228
+  project: MRC

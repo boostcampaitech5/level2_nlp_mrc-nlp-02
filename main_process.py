@@ -23,10 +23,9 @@ from transformers import (
 from tqdm.auto import tqdm
 
 ### 우리가 만든 라이브러리 ###
-from utils import utils, data_controller
+from utils import utils, data_controller, retrieval
 from input.code.trainer_qa import QuestionAnsweringTrainer
 from input.code.utils_qa import postprocess_qa_predictions
-from input.code.retrieval import SparseRetrieval
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -70,6 +69,7 @@ printer.done()
 printer.start('SEED 고정하기')
 set_seed(CFG['seed'])
 TRAIN_ARGS['seed'] = CFG['seed']
+TRAIN_ARGS['per_device_train_batch_size'] = CFG['option']['batch_size']
 printer.done()
 
 if __name__ == "__main__":
@@ -209,10 +209,9 @@ if __name__ == "__main__":
     test_dataset = load_from_disk('input/data/test_dataset')
     
     # retrieval 단계
-    retriever = SparseRetrieval(
-        tokenize_fn=tokenizer, data_path='input/data', 
-    )
-    retriever.get_sparse_embedding()
+    retrieval_class = eval(f"retrieval.{CFG['retrieval_list'][CFG['retrieval_name']]}")
+    retriever = retrieval_class(tokenize_fn=tokenizer.tokenize)
+    retriever.get_embedding()
 
     printer.start("top-k 추출하기")
     df = retriever.retrieve(test_dataset['validation'], topk=CFG['option']['top_k_retrieval'])
