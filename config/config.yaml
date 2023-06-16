@@ -15,6 +15,7 @@ model:
     question_masking: AutoModelForQuestionAnsweringAndMLM
     cnn: AutoModelForQuestionAnsweringAndCNN
     original: AutoModelForQuestionAnswering
+  pretrain: # None, korquad_1.0.csv, aug_v1.csv, aug_v2.csv
 tokenizer:
   max_seq_length: 384
   pad_to_max_length: False
