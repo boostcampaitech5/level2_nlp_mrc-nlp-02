@@ -12,6 +12,9 @@ retrieval/*.bin
 colbert/best_model/*
 colbert/bm25rank_dict.pickle
 force_inference.ipynb
+add_noun_adj.ipynb
+back-question.ipynb
+force_inference.py
 
 ### Git ###
 # Created by git for backups. To disable backups in Git:
