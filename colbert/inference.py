@@ -56,19 +56,15 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
 
         model.load_state_dict(torch.load(model_args.retrieval_ColBERT_path))
 
-        batched_p_embs = []
-
         with torch.no_grad():
             model.eval()
             
             q_seqs_val = tokenize_colbert(query, ret_tokenizer, corpus="query").to("cuda")
-            print(len(q_seqs_val['input_ids'][0]))
             q_emb = model.query(**q_seqs_val).to("cpu")
             
             del q_seqs_val
             
-            print(q_emb.size())
-
+            print('q_emb_size: \n', q_emb.size())
 
             print("Start passage embedding.. ....")
             batched_p_embs = []
@@ -90,14 +86,17 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
 
                 batched_p_embs.append(p_emb)
             
-            print(len(batched_p_embs), batched_p_embs[0].size())
+            print('p_embs_n_batches: ', len(batched_p_embs))
+            print('in_batch_size:\n', batched_p_embs[0].shape)
             
         if training_args.do_eval:
             total_score_for_eval = []
             for num in range(0, 4000, 400):
                 total_score_for_eval.append((dot_prod_scores_eval:=model.get_score(q_emb[num : num+400], batched_p_embs, eval=True)))
                 print(f'from {num} to {num+4000}:', dot_prod_scores_eval.size())
+            total_score_for_eval.append(model.get_score(q_emb[4000:], batched_p_embs, eval=True))
             dot_prod_scores = torch.cat(total_score_for_eval, dim=0)
+            print('final_score_matrix\n')
             print(dot_prod_scores.size())
             
         else:
