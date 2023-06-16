@@ -26,6 +26,7 @@ from tqdm.auto import tqdm
 from utils import utils, data_controller, retrieval
 from input.code.trainer_qa import QuestionAnsweringTrainer
 from input.code.utils_qa import postprocess_qa_predictions
+from models.models import *
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -99,7 +100,8 @@ if __name__ == "__main__":
         config.num_hidden_layers = CFG['model']['num_hidden_layers']
         config.hidden_dropout_prob = CFG['model']['hidden_dropout_prob']
     tokenizer = AutoTokenizer.from_pretrained(CFG['model']['model_name'], use_fast=True) # rust tokenizer if use_fast == True else python tokenizer
-    model = AutoModelForQuestionAnswering.from_pretrained(CFG['model']['model_name'], config=config)
+    model_class = eval(CFG['model']['select_option'][CFG['model']['option']])
+    model = model_class.from_pretrained(CFG['model']['model_name'], config=config)
     printer.done()
 
     # 토큰화를 위한 파라미터 설정

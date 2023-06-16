@@ -1,3 +1,6 @@
+import torch
+import numpy as np
+
 def train_tokenizing(examples, tokenizer, pad_on_right, CFG, column_names):
     question_column_name = "question" if "question" in column_names else column_names[0]
     context_column_name = "context" if "context" in column_names else column_names[1]
@@ -16,6 +19,32 @@ def train_tokenizing(examples, tokenizer, pad_on_right, CFG, column_names):
         return_token_type_ids=False if 'roberta' in CFG['model']['model_name'] else True, # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.
         padding="max_length" if CFG['tokenizer']['pad_to_max_length'] else False,
     )
+    if CFG['model']['option'] == 'question_masking':
+        for idx in range(len(tokenized_examples["input_ids"])):
+            # Create a probability matrix with the same length as the current input_ids
+            probability_matrix = torch.full((len(tokenized_examples["input_ids"][idx]), ), 0.15)
+            # Get the special tokens mask for the current input_ids
+            special_tokens_mask = tokenizer.get_special_tokens_mask(tokenized_examples["input_ids"][idx], already_has_special_tokens=True)
+            # Update the probability matrix with the special tokens mask
+            probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
+            # Get the sequence ids for the current example
+            sequence_ids = tokenized_examples.sequence_ids(idx)
+            # Replace None values with 0
+            sequence_ids = [0 if v is None else v for v in sequence_ids]
+            # Convert sequence_ids back to tensor
+            sequence_ids = torch.tensor(sequence_ids, dtype=torch.bool)
+            # Update the probability matrix with the sequence ids
+            probability_matrix.masked_fill_(sequence_ids, value=0.0)  # apply 0 probability for context tokens
+            # Calculate the masked indices
+            masked_indices = torch.bernoulli(probability_matrix).bool()
+            # Apply masking and create labels
+            masked_input_ids = np.where(masked_indices, tokenizer.convert_tokens_to_ids(tokenizer.mask_token), tokenized_examples["input_ids"][idx])
+            labels = np.where(~masked_indices, -100, tokenized_examples["input_ids"][idx])
+            tokenized_examples["input_ids"][idx] = masked_input_ids.tolist()
+            if idx == 0:
+                tokenized_examples["labels"] = [labels.tolist()]
+            else:
+                tokenized_examples["labels"].append(labels.tolist())
 
     # 길이가 긴 context가 등장할 경우 truncate를 진행해야하므로, 해당 데이터셋을 찾을 수 있도록 mapping 가능한 값이 필요합니다.
     sample_mapping = tokenized_examples.pop("overflow_to_sample_mapping")
