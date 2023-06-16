@@ -1,6 +1,7 @@
 실험명: 실험명
 seed: 42
 retrieval_name: SparseTFIDF
+retrieval_fuzz: True
 retrieval_list:
   SparseTFIDF: SparseTFIDF
 model:
@@ -26,6 +27,7 @@ option:
   top_k_retrieval: 10
   use_faiss: False
   batch_size: 8
+  use_fuzz: False
 wandb:
   id: gibum1228
   project: MRC
