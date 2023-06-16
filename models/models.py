@@ -4,6 +4,7 @@ import numpy as np
 import torch.nn.functional as F
 
 from torch.nn import CrossEntropyLoss
+from transformers import AutoModelForQuestionAnswering
 from transformers.modeling_outputs import QuestionAnsweringModelOutput
 
 
