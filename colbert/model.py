@@ -79,7 +79,7 @@ class ColbertModel(BertPreTrainedModel):
 
         else:
             if self.similarity_metric == "cosine":
-
+                breakpoint()
                 p_sequence_output = D.transpose(
                     1, 2
                 )  # (batch_size, hidden_size, p_sequence_length)

@@ -29,11 +29,11 @@ def main():
 
     set_seed(42)
 
-    batch_size = 16
+    batch_size = 32
     load_weight_path = None #"./best_model_aug/colbert_epoch10.pth"
     data_path = "../input/data/train_dataset"
 
-    lr = 4e-6
+    lr = 3e-5
     args = TrainingArguments(
         output_dir="dense_retrieval",
         evaluation_strategy="epoch",
@@ -75,7 +75,6 @@ def main():
             pointer += 1 
         if not flag:
             raise IndexError(f'{row["id"]} don\'t have enough samples for hard negative.\ncheck colbert train.py')
-    breakpoint()
     train_dataset = set_columns(train_dataset)
 
     print("dataset tokenizing.......")
@@ -183,7 +182,7 @@ def train(args, dataset, model):
             targets = torch.arange(0, outputs.shape[0]).long()
             if torch.cuda.is_available():
                 targets = targets.to("cuda")
-
+            breakpoint()
             sim_scores = F.log_softmax(outputs, dim=1)
 
             loss = F.nll_loss(sim_scores, targets)
