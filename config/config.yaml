@@ -27,6 +27,7 @@ option:
   top_k_retrieval: 10
   use_faiss: False
   batch_size: 8
+  use_fuzz: False
 wandb:
   id: gibum1228
   project: MRC
