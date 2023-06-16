@@ -1,14 +1,42 @@
-from transformers.modeling_outputs import QuestionAnsweringModelOutput
 import torch
 import torch.nn as nn
 import numpy as np
+import torch.nn.functional as F
+
 from torch.nn import CrossEntropyLoss
+from transformers.modeling_outputs import QuestionAnsweringModelOutput
+
+
+class CNN_BLOCK(nn.Module):
+    def __init__(self, CFG):
+        super(CNN_BLOCK, self).__init__()
+        T = CFG['tokenizer']['max_seq_length']
+        H = 768
+
+        self.conv1 = nn.Conv1d(T, T * 2, 3, stride=1, padding='same')
+        self.conv2 = nn.Conv1d(T * 2, T, 1, stride=1, padding='same')
+        self.layernorm = nn.LayerNorm(H)
+
+    def forward(self, x):
+        _x = x
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = F.relu(x) + _x
+        x = self.layernorm(x)
+
+        return x
 
 
 class AutoModelForQuestionAnsweringAndCNN(AutoModelForQuestionAnswering):
-    def __init__(self, config):
-        super().__init__(config)        
+    def __init__(self, config, CFG):
+        super().__init__(config)
         self.init_weights()
+
+        self.cnn_block_1 = CNN_BLOCK(CFG)
+        self.cnn_block_2 = CNN_BLOCK(CFG)
+        self.cnn_block_3 = CNN_BLOCK(CFG)
+        self.cnn_block_4 = CNN_BLOCK(CFG)
+        self.cnn_block_5 = CNN_BLOCK(CFG)
 
     def forward(
         self,
@@ -43,6 +71,11 @@ class AutoModelForQuestionAnsweringAndCNN(AutoModelForQuestionAnswering):
         sequence_output = outputs[0]
         
         ### CNN 연산 ###
+        sequence_output = self.cnn_block_1(sequence_output)
+        sequence_output = self.cnn_block_2(sequence_output)
+        sequence_output = self.cnn_block_3(sequence_output)
+        sequence_output = self.cnn_block_4(sequence_output)
+        sequence_output = self.cnn_block_5(sequence_output)
 
         logits = self.qa_outputs(sequence_output)
         start_logits, end_logits = logits.split(1, dim=-1)
