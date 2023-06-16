@@ -235,8 +235,8 @@ class SparseBM25(BaseRetrieval):
         self,
         CFG,
         tokenize_fn,
-        data_path: Optional[str] = "../data/",
-        context_path: Optional[str] = "wikipedia_documents_processed.json",
+        data_path: Optional[str] = "retrieval/",
+        context_path: Optional[str] = "wikipedia_documents.json",
     ) -> None:
         super().__init__(CFG, tokenize_fn, data_path, context_path)
 

@@ -212,7 +212,7 @@ if __name__ == "__main__":
     
     # retrieval 단계
     retrieval_class = eval(f"retrieval.{CFG['retrieval_list'][CFG['retrieval_name']]}")
-    retriever = retrieval_class(tokenize_fn=tokenizer.tokenize)
+    retriever = retrieval_class(CFG=CFG, tokenize_fn=tokenizer.tokenize)
     retriever.get_embedding()
 
     printer.start("top-k 추출하기")
