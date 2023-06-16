@@ -55,6 +55,7 @@ class ColbertModel(BertPreTrainedModel):
     def get_score(self, Q, D, N=None, eval=False):
         # hard negative N은 train에만 쓰임.
         if eval:
+            breakpoint()
             if self.similarity_metric == "cosine":
                 final_score = torch.tensor([])
                 for D_batch in tqdm(D):

@@ -56,12 +56,12 @@ def tokenize_colbert(dataset, tokenizer, corpus):
         return tokenized_query
 
     elif corpus == "doc":
-        preprocessed_data = "[D] " + dataset
+        preprocessed_data = []
+        for document in dataset:
+            preprocessed_data.append("[D] " + document)
+            
         tokenized_context = tokenizer(
-            preprocessed_data,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
+            preprocessed_data, return_tensors="pt", padding="max_length",truncation=True,
         )
         
         # DOC는 token_type_ids 다 1로 줘 보자

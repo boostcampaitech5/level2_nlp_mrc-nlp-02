@@ -11,6 +11,7 @@ config/use/*
 colbert/bm25rank_dict.pickle
 colbert/best_model/*
 force_inference.ipynb
+force_inference.py
 
 ### Git ###
 # Created by git for backups. To disable backups in Git:

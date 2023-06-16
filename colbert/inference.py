@@ -1,6 +1,7 @@
 import pandas as pd
 import torch
 import json
+from itertools import zip_longest
 
 from datasets import (
     Dataset,
@@ -68,19 +69,28 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
             
             print(q_emb.size())
 
+
             print("Start passage embedding.. ....")
-            p_embs = []
-            for step, p in enumerate(tqdm(context)):
-                p = tokenize_colbert(p, ret_tokenizer, corpus="doc").to("cuda")
+            batched_p_embs = []
+            P_BATCH_SIZE = 128
+            # Define a generator for iterating in chunks
+            def chunks(iterable, n, fillvalue=None):
+                args = [iter(iterable)] * n
+                return zip_longest(*args, fillvalue=fillvalue)
+
+            for step, batch in enumerate(tqdm(chunks(context, P_BATCH_SIZE), total=len(context)//P_BATCH_SIZE)):
+                # The last batch can contain `None` values if the length of `context` is not divisible by 128
+                batch = [b for b in batch if b is not None]
+
+                # Tokenize the entire batch at once
+                p = tokenize_colbert(batch, ret_tokenizer, corpus="doc").to("cuda")
                 p_emb = model.doc(**p).to("cpu").numpy()
-                
+
                 del p
-                
-                p_embs.append(p_emb)
-                if (step + 1) % 64 == 0:
-                    batched_p_embs.append(p_embs)
-                    p_embs = []
-            batched_p_embs.append(p_embs)
+
+                batched_p_embs.append(p_emb)
+            
+            print(len(batched_p_embs), batched_p_embs[0].size())
             
         if training_args.do_eval:
             total_score_for_eval = []
