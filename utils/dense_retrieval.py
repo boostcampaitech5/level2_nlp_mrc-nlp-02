@@ -2,11 +2,14 @@ import os
 import torch
 import wandb
 import pickle
+import time
+import pandas as pd
 import numpy as np
 import torch.nn.functional as F
 
-from tqdm import tqdm
-from datasets import load_dataset, load_from_disk
+from tqdm.auto import tqdm
+from contextlib import contextmanager
+from datasets import Dataset, load_dataset, load_from_disk
 from torch.utils.data import DataLoader, TensorDataset
 from transformers import (
     AutoTokenizer,
@@ -16,6 +19,12 @@ from transformers import (
     TrainingArguments,
 )
 
+@contextmanager
+def timer(name):
+    t0 = time.time()
+    yield
+    print(f"[{name}] done in {time.time() - t0:.3f} s")
+    
 class DenseRetrieval:
 
     def __init__(self, args, dataset, num_neg, tokenizer, p_encoder, q_encoder):
@@ -71,13 +80,13 @@ class DenseRetrieval:
             q_seqs['input_ids'], q_seqs['attention_mask'], q_seqs['token_type_ids']
         )
 
-        self.train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=self.args.per_device_train_batch_size)
+        self.train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=self.args.per_device_train_batch_size, drop_last=True)
 
         valid_seqs = tokenizer(dataset['context'], padding="max_length", truncation=True, return_tensors='pt')
         passage_dataset = TensorDataset(
             valid_seqs['input_ids'], valid_seqs['attention_mask'], valid_seqs['token_type_ids']
         )
-        self.passage_dataloader = DataLoader(passage_dataset, batch_size=self.args.per_device_train_batch_size)
+        self.passage_dataloader = DataLoader(passage_dataset, batch_size=self.args.per_device_train_batch_size, drop_last=True)
 
 
     def train(self, args=None):
@@ -176,11 +185,60 @@ class DenseRetrieval:
         
         if not os.path.isfile(p_emb_path) or not os.path.isfile(q_emb_path):
             with open(p_emb_path, "wb") as file:
-                pickle.dump(p_pickle_name, file)
+                pickle.dump(self.p_encoder, file)
             with open(q_emb_path, "wb") as file:
-                pickle.dump(q_pickle_name, file)
+                pickle.dump(self.q_encoder, file)
             print("Embedding pickle saved.")
 
+    def get_relevant_doc_bulk(self, queries, k, args, p_encoder=None, q_encoder=None):
+        """
+        
+        """
+        p_pickle_name = f"passage_dense_embedding.bin"
+        q_pickle_name = f"question_dense_embedding.bin"
+        p_emb_path = os.path.join("./", p_pickle_name)
+        q_emb_path = os.path.join("./", q_pickle_name)
+        
+        if os.path.isfile(p_emb_path) and os.path.isfile(q_emb_path):
+            with open(p_emb_path, "rb") as file:
+                p_encoder = pickle.load(file)
+            with open(q_emb_path, "rb") as file:
+                q_encoder = pickle.load(file)
+            print("Embedding pickle load.")
+        
+        else:
+            print("You should train encoder first..! break.")
+            return
+        
+        with torch.no_grad():
+            p_encoder.eval()
+            q_encoder.eval()
+            
+            queries_tok = self.tokenizer(queries, padding="max_length", truncation=True, return_tensors='pt').to(args.device)
+            queries_emb = q_encoder(**queries_tok).to(args.device)
+            
+            passage_embs = []
+            for batch in tqdm(self.passage_dataloader, desc='queries retrieve 중'):
+                batch = tuple(t.to(args.device) for t in batch)
+                
+                passage_inputs = {
+                    'input_ids': batch[0],
+                    'attention_mask': batch[1],
+                    'token_type_ids': batch[2]
+                }
+                passage_emb = p_encoder(**passage_inputs).to('cpu')
+                passage_embs.append(passage_emb)    # [(batch, H), (batch, H), ...]
+            
+            stacked = torch.stack(passage_embs, dim=0).view(len(self.passage_dataloader.dataset)//args.per_device_train_batch_size*args.per_device_train_batch_size, -1).to(args.device)  # (num_passage, emb_dim)
+            dot_prod_scores = torch.matmul(queries_emb, torch.transpose(stacked, 0, 1))  # (num_queries, num_passage)
+            
+            rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze() # (num_queries, num_passage)
+            top_k_docs_scores = torch.gather(dot_prod_scores, dim=1, index=rank)[:, :k]
+            top_k_docs_indices = rank[:, :k]
+        
+        return top_k_docs_scores, top_k_docs_indices
+        
+    
     def get_relevant_doc(self, query, k=1, args=None, p_encoder=None, q_encoder=None):
 
         if args is None:
@@ -215,8 +273,48 @@ class DenseRetrieval:
 
         dot_prod_scores = torch.matmul(q_emb, torch.transpose(p_embs, 0, 1))
         rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
-        return rank[:k]
+        return dot_prod_scores[:k], rank[:k]
 
+    
+    def retrieve(self, query_or_dataset, topk=20, args=None):
+        """
+        
+        """
+        
+        if isinstance(query_or_dataset, str):
+            doc_scores, doc_indices = self.get_relevant_doc(query_or_dataset, topk)
+            print("[Search query]\n", query_or_dataset, "\n")
+
+            for i in range(topk):
+                print(f"Top-{i+1} passage with score {doc_scores[i]:4f}")
+                print(self.contexts[doc_indices[i]])
+
+            return (doc_scores, [self.contexts[doc_indices[i]] for i in range(topk)])
+
+        elif isinstance(query_or_dataset, Dataset):
+            # Retrieve한 Passage를 pd.DataFrame으로 반환합니다.
+            total = []
+            
+            with timer("query exhaustive search"):
+                doc_scores, doc_indices = self.get_relevant_doc_bulk(query_or_dataset['question'], k=topk, args=args)
+                
+            for idx, example in enumerate(tqdm(query_or_dataset, desc="Dense retrieval: ")):
+                tmp = {
+                    "question": example["question"],
+                    "id": example["id"],
+                    "context": " ".join(
+                        [self.dataset['context'][pid] for pid in doc_indices[idx]]
+                    ),
+                }
+                if "context" in example.keys() and "answers" in example.keys():
+                    # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
+                    tmp["original_context"] = example["context"]
+                    tmp["answers"] = example["answers"]
+                total.append(tmp)
+            
+            df = pd.DataFrame(total)
+
+        return df
 
 class BertEncoder(BertPreTrainedModel):
 
@@ -246,7 +344,7 @@ class BertEncoder(BertPreTrainedModel):
 
 if __name__ == "__main__":
     # setting
-    data_dir = "../data/train_dataset/train"
+    data_dir = "../input/data/train_dataset/train"
     model_checkpoint = 'klue/bert-base'
 
     data = load_from_disk(data_dir)
@@ -274,10 +372,22 @@ if __name__ == "__main__":
     
     retriever = DenseRetrieval(args=dense_args, 
                                dataset=train_dataset, 
-                               num_neg=4,
+                               num_neg=6,
                                tokenizer=tokenizer, 
                                p_encoder=p_encoder, 
                                q_encoder=q_encoder)
     
     
-    retriever.train()
+    # retriever.train()
+    df = retriever.retrieve(valid_dataset, topk=2, args=dense_args)
+    
+    
+    # # retrieve 테스트
+    # # print(valid_dataset['question'][:10])
+    # queries = valid_dataset['question'][:5]
+    # score, docs = retriever.get_relevant_doc_bulk(queries, k=10, args=dense_args)
+    
+    # for query in range(len(queries)):
+    #     for i, idx in enumerate(docs.tolist()[query]):
+    #         print(f"Top-{i + 1}th Passage (Index {idx})")
+    #         print(retriever.dataset['context'][idx])
