@@ -118,7 +118,7 @@ if __name__ == "__main__":
     # train/valid 데이터셋 정의
     printer.start('train/valid 데이터셋 정의')
     if CFG['model']['pretrain']:
-        aug_df = pd.read_csv('/opt/ml/input/code/' + CFG['model']['pretrain'])
+        aug_df = pd.read_csv('/opt/ml/input/data/' + CFG['model']['pretrain'])
         aug_df.drop(['Unnamed: 0'], axis = 1, inplace = True)
         aug_df['id'] = aug_df['id'].apply(lambda x:str(x))
         aug_df['answers'] = aug_df['answers'].apply(eval)
