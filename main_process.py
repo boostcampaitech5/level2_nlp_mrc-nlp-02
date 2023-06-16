@@ -117,9 +117,20 @@ if __name__ == "__main__":
 
     # train/valid 데이터셋 정의
     printer.start('train/valid 데이터셋 정의')
-    train_data = train_dataset['train']
+    if CFG['model']['pretrain']:
+        aug_df = pd.read_csv('/opt/ml/input/code/' + CFG['model']['pretrain'])
+        aug_df.drop(['Unnamed: 0'], axis = 1, inplace = True)
+        aug_df['id'] = aug_df['id'].apply(lambda x:str(x))
+        aug_df['answers'] = aug_df['answers'].apply(eval)
+        new_data = Dataset.from_pandas(aug_df)
+        train_data = new_data
+        print('Pretrain with this new dataset\n\n')
+        print(train_data)
+    else:
+        train_data = train_dataset['train']
+        print('finetuning or just train with original dataset')
+        print(train_data)
     val_data = train_dataset['validation']
-    print(train_data)
     print(val_data)
     printer.done()
 
