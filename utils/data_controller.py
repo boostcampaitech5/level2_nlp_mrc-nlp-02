@@ -19,7 +19,7 @@ def train_tokenizing(examples, tokenizer, pad_on_right, CFG, column_names):
         return_token_type_ids=False if 'roberta' in CFG['model']['model_name'] else True, # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.
         padding="max_length" if CFG['tokenizer']['pad_to_max_length'] else False,
     )
-    if CFG['option']['question_masking']:
+    if CFG['model']['option'] == 'question_masking':
         for idx in range(len(tokenized_examples["input_ids"])):
             # Create a probability matrix with the same length as the current input_ids
             probability_matrix = torch.full((len(tokenized_examples["input_ids"][idx]), ), 0.15)
