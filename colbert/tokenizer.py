@@ -79,7 +79,7 @@ def tokenize_colbert(dataset, tokenizer, corpus):
             preprocessed_context,
             return_tensors="pt",
             padding="max_length",
-            truncation=True,
+            truncation=True
         )
         return tokenized_context
     # for train
@@ -90,7 +90,7 @@ def tokenize_colbert(dataset, tokenizer, corpus):
             preprocessed_context.append("[D] " + context)
             preprocessed_query.append("[Q] " + query)
         tokenized_query = tokenizer(
-            preprocessed_query, return_tensors="pt", padding=True, truncation=True, max_length=128
+            preprocessed_query, return_tensors="pt", padding='max_length', truncation=True, max_length=64
         )
 
         tokenized_context = tokenizer(

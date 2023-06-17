@@ -20,6 +20,7 @@ from .tokenizer import *
 from .model import *
 
 def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
+    breakpoint()
     test_dataset = datasets["validation"].flatten_indices().to_pandas()
     MODEL_NAME = "klue/bert-base"
 
@@ -49,7 +50,7 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
         special_tokens = {"additional_special_tokens": ["[Q]", "[D]"]}
         ret_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
         ret_tokenizer.add_special_tokens(special_tokens)
-        model = ColbertModel.from_pretrained(MODEL_NAME)
+        model = ColbertModel(model_config)
         model.resize_token_embeddings(ret_tokenizer.vocab_size + 2)
 
         model.to(device)
@@ -61,9 +62,6 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
             
             q_seqs_val = tokenize_colbert(query, ret_tokenizer, corpus="query").to("cuda")
             q_emb = model.query(**q_seqs_val).to("cpu")
-            
-            del q_seqs_val
-            
             print('q_emb_size: \n', q_emb.size())
 
             print("Start passage embedding.. ....")
@@ -81,27 +79,24 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
                 # Tokenize the entire batch at once
                 p = tokenize_colbert(batch, ret_tokenizer, corpus="doc").to("cuda")
                 p_emb = model.doc(**p).to("cpu").numpy()
-
-                del p
-
                 batched_p_embs.append(p_emb)
             
             print('p_embs_n_batches: ', len(batched_p_embs))
             print('in_batch_size:\n', batched_p_embs[0].shape)
             
-        if training_args.do_eval:
-            total_score_for_eval = []
-            for num in range(0, 4000, 400):
-                total_score_for_eval.append((dot_prod_scores_eval:=model.get_score(q_emb[num : num+400], batched_p_embs, eval=True)))
-                print(f'from {num} to {num+4000}:', dot_prod_scores_eval.size())
-            total_score_for_eval.append(model.get_score(q_emb[4000:], batched_p_embs, eval=True))
-            dot_prod_scores = torch.cat(total_score_for_eval, dim=0)
-            print('final_score_matrix\n')
-            print(dot_prod_scores.size())
+        # if training_args.do_eval:
+        #     total_score_for_eval = []
+        #     for num in range(0, 4000, 400):
+        #         total_score_for_eval.append((dot_prod_scores_eval := model.get_score(q_emb[num : num+400], batched_p_embs, eval=True)))
+        #         print(f'from {num} to {num+4000}:', dot_prod_scores_eval.size())
+        #     total_score_for_eval.append(model.get_score(q_emb[4000:], batched_p_embs, eval=True))
+        #     dot_prod_scores = torch.cat(total_score_for_eval, dim=0)
+        #     print('final_score_matrix\n')
+        #     print(dot_prod_scores.size())
             
-        else:
-            dot_prod_scores = model.get_score(q_emb, batched_p_embs, eval=True)
-            print(dot_prod_scores.size())
+        # else:
+        dot_prod_scores = model.get_score(q_emb, batched_p_embs, eval=True)
+        print(dot_prod_scores.size())
 
         rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
         print(dot_prod_scores)
