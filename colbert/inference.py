@@ -20,7 +20,6 @@ from .tokenizer import *
 from .model import *
 
 def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
-    breakpoint()
     test_dataset = datasets["validation"].flatten_indices().to_pandas()
     MODEL_NAME = "klue/bert-base"
 
@@ -50,7 +49,7 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
         special_tokens = {"additional_special_tokens": ["[Q]", "[D]"]}
         ret_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
         ret_tokenizer.add_special_tokens(special_tokens)
-        model = ColbertModel(model_config)
+        model = ColbertModel.from_pretrained(MODEL_NAME)
         model.resize_token_embeddings(ret_tokenizer.vocab_size + 2)
 
         model.to(device)
@@ -83,17 +82,7 @@ def run_colbert_retrieval(datasets, model_args, training_args, top_k=10):
             
             print('p_embs_n_batches: ', len(batched_p_embs))
             print('in_batch_size:\n', batched_p_embs[0].shape)
-            
-        # if training_args.do_eval:
-        #     total_score_for_eval = []
-        #     for num in range(0, 4000, 400):
-        #         total_score_for_eval.append((dot_prod_scores_eval := model.get_score(q_emb[num : num+400], batched_p_embs, eval=True)))
-        #         print(f'from {num} to {num+4000}:', dot_prod_scores_eval.size())
-        #     total_score_for_eval.append(model.get_score(q_emb[4000:], batched_p_embs, eval=True))
-        #     dot_prod_scores = torch.cat(total_score_for_eval, dim=0)
-        #     print('final_score_matrix\n')
-        #     print(dot_prod_scores.size())
-            
+
         # else:
         dot_prod_scores = model.get_score(q_emb, batched_p_embs, eval=True)
         print(dot_prod_scores.size())

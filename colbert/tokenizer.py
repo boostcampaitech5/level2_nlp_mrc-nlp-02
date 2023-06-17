@@ -56,9 +56,7 @@ def tokenize_colbert(dataset, tokenizer, corpus):
         return tokenized_query
 
     elif corpus == "doc":
-        preprocessed_data = []
-        for document in dataset:
-            preprocessed_data.append("[D] " + document)
+        preprocessed_data = '[D] '+ dataset
             
         tokenized_context = tokenizer(
             preprocessed_data, return_tensors="pt", padding="max_length",truncation=True,
@@ -92,6 +90,12 @@ def tokenize_colbert(dataset, tokenizer, corpus):
         tokenized_query = tokenizer(
             preprocessed_query, return_tensors="pt", padding='max_length', truncation=True, max_length=64
         )
+        
+        mask_token_ids = tokenized_query["input_ids"] == tokenizer.pad_token_id
+        tokenized_query["input_ids"] = tokenized_query["input_ids"].where(~mask_token_ids, tokenizer.mask_token_id)
+        tokenized_query["attention_mask"] = torch.ones_like(tokenized_query["attention_mask"])        
+        if "token_type_ids" in tokenized_query:
+            tokenized_query["token_type_ids"] = torch.zeros_like(tokenized_query["token_type_ids"])
 
         tokenized_context = tokenizer(
             preprocessed_context,

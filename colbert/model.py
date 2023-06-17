@@ -46,14 +46,12 @@ class ColbertModel(BertPreTrainedModel):
     def query(self, input_ids, attention_mask, token_type_ids):
         Q = self.bert(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)[0]
         Q = self.linear(Q)
-        Q = torch.nn.functional.normalize(Q, p=2, dim=2)
-        return Q
+        return torch.nn.functional.normalize(Q, p=2, dim=2)
 
     def doc(self, input_ids, attention_mask, token_type_ids):
         D = self.bert(input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)[0]
         D = self.linear(D)
-        D = torch.nn.functional.normalize(D, p=2, dim=2)
-        return D
+        return torch.nn.functional.normalize(D, p=2, dim=2)
 
     def get_score(self, Q, D, N=None, eval=False):
         # hard negative N은 train에만 쓰임.
@@ -61,8 +59,7 @@ class ColbertModel(BertPreTrainedModel):
             if self.similarity_metric == "cosine":
                 final_score = torch.tensor([])
                 for D_batch in tqdm(D):
-                    D_batch = np.array(D_batch) # (p_batch_size, p_sequence_length, hidden_size)
-                    D_batch = torch.Tensor(D_batch)
+                    D_batch = torch.Tensor(np.array(D_batch)).squeeze() # (p_batch_size, p_sequence_length, hidden_size)
                     p_sequence_output = D_batch.transpose(
                         1, 2
                     )  # (p_batch_size, hidden_size, p_sequence_length)
@@ -82,10 +79,11 @@ class ColbertModel(BertPreTrainedModel):
 
         else:
             if self.similarity_metric == "cosine":
+                
                 p_sequence_output = D.transpose(
                     1, 2
                 )  # (batch_size, hidden_size, p_sequence_length)              
-                if N != None:
+                if N:
                     n1_sequence_output = N[0].transpose(1, 2)
                     n2_sequence_output = N[1].transpose(1, 2)
                     p_sequence_output = torch.cat(
@@ -101,4 +99,5 @@ class ColbertModel(BertPreTrainedModel):
                     0
                 ]  # (batch_size, batch_size + hard_negative_size, q_sequnce_length)
                 final_score = torch.sum(max_dot_prod_score, dim=2)  # (batch_size, batch_size + hard_negative_size)
+                
                 return final_score

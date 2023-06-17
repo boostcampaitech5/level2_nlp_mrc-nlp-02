@@ -23,30 +23,26 @@ from transformers import (
     set_seed,
 )
 
-BM25_USED = False
+BM25_USED = True
 pretrain = True
-load_weight_path = ''
-batch_size = 36
-lr = 4e-5
-num_train_epochs = 6
-save_name = 'pretrain'
 
 def main():
-
+    
     set_seed(42)
-
+    
+    batch_size = 15
     data_path = "../input/data/train_dataset"
-    if pretrain:
-        load_weight_path = None
-        
+    load_weight_path = '/opt/ml/colbert/best_model/colbert_pretrain_v2.pth'   
+    lr = 4e-5
     args = TrainingArguments(
         output_dir="dense_retrieval",
         evaluation_strategy="epoch",
         learning_rate=lr,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
-        num_train_epochs=num_train_epochs,
-        weight_decay=0.01
+        num_train_epochs=12,
+        weight_decay=0.01,
+        warmup_steps=900
     )
 
     MODEL_NAME = "klue/bert-base"
@@ -81,7 +77,7 @@ def main():
             with open(comtext1_path, "rb") as file:
                 bm25rank_contexts1 = pickle.load(file)
             with open(comtext2_path, "rb") as file:
-                bm25rank_contexts2 = pickle.load(file)            
+                bm25rank_contexts2 = pickle.load(file)          
             print("bm25 hard negative loaded.")
         else:
             # bm25 hard negative
@@ -127,8 +123,15 @@ def main():
     if BM25_USED:
         train_bm25_1 = tokenize_colbert(bm25rank_contexts1, tokenizer, corpus="bm25_hard")
         train_bm25_2 = tokenize_colbert(bm25rank_contexts2, tokenizer, corpus="bm25_hard")
+        breakpoint()
 
         train_dataset = TensorDataset(
+            train_context["input_ids"],
+            train_context["attention_mask"],
+            train_context["token_type_ids"],
+            train_query["input_ids"],
+            train_query["attention_mask"],
+            train_query["token_type_ids"],
             train_bm25_1["input_ids"],
             train_bm25_1["attention_mask"],
             train_bm25_1["token_type_ids"],
@@ -158,7 +161,7 @@ def main():
 
     print("model train...")
     trained_model = train(args, train_dataset, model)
-    torch.save(trained_model.state_dict(), f"best_model/colbert_{save_name}.pth")
+    torch.save(trained_model.state_dict(), f"best_model/colbert_pretrain_v3.pth")
 
 
 def train(args, dataset, model):
@@ -243,10 +246,11 @@ def train(args, dataset, model):
             targets = torch.arange(0, outputs.shape[0]).long()
             if torch.cuda.is_available():
                 targets = targets.to("cuda")
+                
             sim_scores = F.log_softmax(outputs, dim=1)
 
             loss = F.nll_loss(sim_scores, targets)
-            total_loss += loss.item()
+            total_loss += loss
             loss.backward()
             optimizer.step()
             scheduler.step()
@@ -256,7 +260,7 @@ def train(args, dataset, model):
         final_loss = total_loss / len(dataset)
         print("total_loss :", final_loss)
         if epoch > 3:
-            torch.save(model.state_dict(), f"best_model/compare_colbert_{save_name}_{epoch+1}.pth")
+            torch.save(model.state_dict(), f"best_model/compare_colbert_pretrain_v3_{epoch+1}.pth")
 
     return model
 
