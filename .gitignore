@@ -4,6 +4,11 @@
 ### 커스텀 ###
 input/*
 .[^gitignore]*
+.gitconfig
+.netrc
+results/*
+config/use/*
+nltk_data/*
 
 ### Git ###
 # Created by git for backups. To disable backups in Git:
