@@ -31,6 +31,7 @@ class SparseBM25_edited(SparseBM25):
     """
     Note: BM25를 상속받으면서, 함수를 추가. 내가 gold context를 넘기면, gold가 아닌 것들로 topk를 가져오는 함수
     """
+    
     def __init__(
         self,
         CFG,
@@ -41,40 +42,38 @@ class SparseBM25_edited(SparseBM25):
         super().__init__(CFG, tokenize_fn, data_path, context_path)
         
     def retrieve_except_gold(
-       self, gold_context: List, query_dataset: Dataset, topk: Optional[int] = 1
+       self, query_dataset: Dataset, topk: Optional[int] = 1
     ) -> Union[Tuple[List, List], pd.DataFrame]:
         # want to get List of strings
         """
         Note:
-        
+            topk를 가져오면 거기에 positive가 있을 수도, 없을 수도 있다. 
+            topk 개만 온전히 가져가려면, 최소 topk+1개를 애초에 retrieve해야한다.
         Args:
         
         Returns:
         """
-        
+        self.num_neg = self.num_neg + topk
         result = []
         alpha = 2
         with timer("query exhaustive search"):
             doc_scores, doc_indices = self.get_relevant_doc_bulk(
-                query_dataset["question"], k=max(40 + topk, alpha * topk) if self.CFG['option']['use_fuzz'] else topk
+                query_dataset["question"], k=max(40 + topk, alpha * topk) if self.CFG['option']['use_fuzz'] else topk+1
             )
             
         for idx, example in enumerate(
             tqdm(query_dataset, desc="Sparse retrieval except gold context: ")
         ):
-            test = []
+            except_gold = []
             for pid in doc_indices[idx]:
-                try:
-                    dist = Levenshtein.distance(gold_context[idx], self.contexts[pid])
+                dist = Levenshtein.distance(example['context'], self.contexts[pid])
+            
+                if dist > min(len(example['context']), len(self.contexts[pid]))//10*2:
+                    except_gold.append(self.contexts[pid])
 
-                
-                    if dist > min(len(gold_context[idx]), len(self.contexts[pid]))//10*2:
-                        test.extend(self.contexts[pid])
-                except:
-                    print(f"idx, pid: {idx}, {pid}")
-                
             #test_result.extend1([[self.contexts[pid]] for pid in doc_indices[idx] if gold_context[idx] != self.contexts[pid]])
-            result.append(test)
+            except_gold = except_gold[:topk]
+            result.append(except_gold)
         
         return result
     
