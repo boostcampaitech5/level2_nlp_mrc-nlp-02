@@ -1,8 +1,9 @@
 import os
+import time
 import torch
 import wandb
 import pickle
-import time
+import Levenshtein
 import pandas as pd
 import numpy as np
 import torch.nn.functional as F
@@ -25,6 +26,59 @@ def timer(name):
     yield
     print(f"[{name}] done in {time.time() - t0:.3f} s")
     
+    
+class SparseBM25_edited(SparseBM25):
+    """
+    Note: BM25를 상속받으면서, 함수를 추가. 내가 gold context를 넘기면, gold가 아닌 것들로 topk를 가져오는 함수
+    """
+    def __init__(
+        self,
+        CFG,
+        tokenize_fn,
+        data_path: Optional[str] = "retrieval/",
+        context_path: Optional[str] = "wikipedia_documents.json",
+    ) -> None:
+        super().__init__(CFG, tokenize_fn, data_path, context_path)
+        
+    def retrieve_except_gold(
+       self, gold_context: List, query_dataset: Dataset, topk: Optional[int] = 1
+    ) -> Union[Tuple[List, List], pd.DataFrame]:
+        # want to get List of strings
+        """
+        Note:
+        
+        Args:
+        
+        Returns:
+        """
+        
+        result = []
+        alpha = 2
+        with timer("query exhaustive search"):
+            doc_scores, doc_indices = self.get_relevant_doc_bulk(
+                query_dataset["question"], k=max(40 + topk, alpha * topk) if self.CFG['option']['use_fuzz'] else topk
+            )
+            
+        for idx, example in enumerate(
+            tqdm(query_dataset, desc="Sparse retrieval except gold context: ")
+        ):
+            test = []
+            for pid in doc_indices[idx]:
+                try:
+                    dist = Levenshtein.distance(gold_context[idx], self.contexts[pid])
+
+                
+                    if dist > min(len(gold_context[idx]), len(self.contexts[pid]))//10*2:
+                        test.extend(self.contexts[pid])
+                except:
+                    print(f"idx, pid: {idx}, {pid}")
+                
+            #test_result.extend1([[self.contexts[pid]] for pid in doc_indices[idx] if gold_context[idx] != self.contexts[pid]])
+            result.append(test)
+        
+        return result
+    
+
 class DenseRetrieval(BaseRetrieval):
     def __init__(
         self,
@@ -57,7 +111,7 @@ class DenseRetrieval(BaseRetrieval):
         
         self.prepare_in_batch_negative(self.dataset, num_neg, self.tokenizer)
 
-    def prepare_in_batch_negative(self, dataset=None, num_neg=2, tokenizer=None):
+    def prepare_in_batch_negative(self, dataset=None, num_neg=2, tokenizer=None, add_bm25):
         # random negatives -> in-batch   
         corpus = np.array(list(set([example for example in dataset['context']])))
         p_with_neg = []
@@ -73,6 +127,19 @@ class DenseRetrieval(BaseRetrieval):
                     p_with_neg.extend(p_neg)
                     break
 
+        if add_bm25:
+            # p_with_neg: (전체, num_neg+1)
+            # 1. gold context: (전체)
+            gold_context = [context for context in dataset['context']]
+            
+            # 2. retrieve not gold but high bm25 docs
+            bm_25_edited = SparseBM25_edited(CFG, tokenize_fn=tokenizer, data_path="../data")
+            not_gold_context = bm_25_edited.retrieve_except_gold(gold_context, valid_data, topk=num_neg)    # list (전체, num_neg)
+        
+            # 3. extend
+            for idx, rows in enumerate(p_with_neg):
+                p_with_neg.extend(not_gold_context[idx])
+        
         # (Question, Passage) 데이터셋
         q_seqs = tokenizer(dataset['question'], padding="max_length", truncation=True, return_tensors='pt')
         p_seqs = tokenizer(p_with_neg, padding="max_length", truncation=True, return_tensors='pt')
