@@ -3,26 +3,31 @@ import re
 import json
 import yaml
 import time
+import faiss
 import torch
+import utils
 import wandb
 import pickle
 import itertools
 import Levenshtein
-import pandas as pd
-import numpy as np
-import torch.nn.functional as F
-
 import retriever_metric
-import utils
+import numpy as np
+import pandas as pd
+
 from tqdm.auto import tqdm
-from collections import OrderedDict
-from typing import List, Optional, Tuple, Union
-from rank_bm25 import BM25Okapi
 from fuzzywuzzy import fuzz
+from rank_bm25 import BM25Okapi
+from collections import OrderedDict
 from contextlib import contextmanager
-from datasets import Dataset, load_dataset, load_from_disk
+from typing import List, Optional, Tuple, Union
 from torch.utils.data import DataLoader, TensorDataset
+from sklearn.feature_extraction.text import TfidfVectorizer
+from datasets import Dataset, concatenate_datasets, load_from_disk
+from ..colbert.model import *
+from ..colbert.tokenizer import *
+from itertools import zip_longest
 from transformers import (
+    AutoConfig,
     AutoTokenizer,
     BertModel,
     BertPreTrainedModel,
@@ -30,17 +35,19 @@ from transformers import (
     TrainingArguments,
 )
 
+
 @contextmanager
 def timer(name):
     t0 = time.time()
     yield
     print(f"[{name}] done in {time.time() - t0:.3f} s")
 
-
+    
 class BaseRetrieval:
     def __init__(
         self,
         CFG,
+        training_args,
         tokenize_fn,
         data_path: Optional[str] = "retrieval/",
         context_path: Optional[str] = "wikipedia_documents.json"
@@ -77,13 +84,6 @@ class BaseRetrieval:
             dict.fromkeys([v["text"] for v in wiki.values()])
         )  # set 은 매번 순서가 바뀌므로
         print(f"Lengths of unique contexts : {len(self.contexts)}")
-        
-        ## wiki 전처리
-        self.contexts = [re.sub(r"\\n|\n{1,}", " ", context) for context in self.contexts]
-        self.contexts = [re.sub(r"\s{2,}", " ", context) for context in self.contexts]
-        
-        self.contexts = list(OrderedDict.fromkeys(self.contexts))
-        
         self.ids = list(range(len(self.contexts)))
         
     def get_embedding(self) -> None:
@@ -175,16 +175,96 @@ class BaseRetrieval:
     ) -> Tuple[List, List]:
         raise NotImplementedError
 
+class SparseTFIDF(BaseRetrieval):
+    def __init__(
+        self,
+        CFG,
+        training_args,
+        tokenize_fn,
+        data_path: Optional[str] = "retrieval/",
+        context_path: Optional[str] = "wikipedia_documents.json",
+    ) -> None:
+        
+        super().__init__(CFG, training_args, tokenize_fn, data_path, context_path)
+        
+        # Transform by vectorizer
+        self.tfidfv = TfidfVectorizer(
+            tokenizer=tokenize_fn, ngram_range=(1, 2)#, max_features=50000,
+        )
+
+        self.p_embedding = None  # get_sparse_embedding()로 생성합니다
+
+    def get_embedding(self) -> None:
+
+        """
+        Summary:
+            Passage Embedding을 만들고
+            TFIDF와 Embedding을 pickle로 저장합니다.
+            만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
+        """
+
+        # Pickle을 저장합니다.
+        pickle_name = f"sparse_embedding_INF.bin"
+        tfidfv_name = f"tfidv_INF.bin"
+        emd_path = os.path.join(self.data_path, pickle_name)
+        tfidfv_path = os.path.join(self.data_path, tfidfv_name)
+
+        if os.path.isfile(emd_path) and os.path.isfile(tfidfv_path):
+            with open(emd_path, "rb") as file:
+                self.p_embedding = pickle.load(file)
+            with open(tfidfv_path, "rb") as file:
+                self.tfidfv = pickle.load(file)
+            print("Embedding pickle load.")
+        else:
+            print("Build passage embedding")
+            self.p_embedding = self.tfidfv.fit_transform(self.contexts)
+            print(self.p_embedding.shape)
+            with open(emd_path, "wb") as file:
+                pickle.dump(self.p_embedding, file)
+            with open(tfidfv_path, "wb") as file:
+                pickle.dump(self.tfidfv, file)
+            print("Embedding pickle saved.")
+
+    def get_relevant_doc_bulk(
+        self, queries: List, k: Optional[int] = 1
+    ) -> Tuple[List, List]:
+
+        """
+        Arguments:
+            queries (List):
+                여러 Queries를 받습니다.
+            k (Optional[int]): 1
+                상위 몇 개의 Passage를 반환할지 정합니다.
+        Note:
+            vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
+        """
+
+        query_vec = self.tfidfv.transform(queries)
+        assert (
+            np.sum(query_vec) != 0
+        ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
+
+        result = query_vec * self.p_embedding.T
+        if not isinstance(result, np.ndarray):
+            result = result.toarray()
+        doc_scores = []
+        doc_indices = []
+        for i in range(result.shape[0]):
+            sorted_result = np.argsort(result[i, :])[::-1]
+            doc_scores.append(result[i, :][sorted_result].tolist()[:k])
+            doc_indices.append(sorted_result.tolist()[:k])
+        return doc_scores, doc_indices
 
 class SparseBM25(BaseRetrieval):
     def __init__(
         self,
         CFG,
+        training_args,
         tokenize_fn,
         data_path: Optional[str] = "retrieval/",
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> None:
-        super().__init__(CFG, tokenize_fn, data_path, context_path)
+        super().__init__(CFG, training_args, tokenize_fn, data_path, context_path)
 
     def get_embedding(self) -> None:
 
@@ -228,7 +308,6 @@ class SparseBM25(BaseRetrieval):
         with timer("query ex search"):
             result = np.array([self.bm25.get_scores(q) for q in tqdm(tokenized_queries, desc='SparseBM25 query ex search')])
         
-        
         doc_scores = []
         doc_indices = []
         for i in tqdm(range(result.shape[0]), desc='SparseBM25 get relevant doc bulk...'):
@@ -236,8 +315,8 @@ class SparseBM25(BaseRetrieval):
             doc_scores.append(result[i, :][sorted_result].tolist()[:k])
             doc_indices.append(sorted_result.tolist()[:k])
         return doc_scores, doc_indices
-    
-    
+
+
 class SparseBM25_edited(SparseBM25):
     """
     Note: BM25를 상속받으면서, 함수를 추가. 내가 gold context를 넘기면, gold가 아닌 것들로 topk를 가져오는 함수
@@ -255,7 +334,6 @@ class SparseBM25_edited(SparseBM25):
     def retrieve_except_gold(
        self, query_dataset: Dataset, topk: Optional[int] = 1
     ) -> List:
-        # want to get List of strings
         """
         Note:
             topk를 가져오면 거기에 positive가 있을 수도, 없을 수도 있다. 
@@ -286,8 +364,103 @@ class SparseBM25_edited(SparseBM25):
             result.append(except_gold)
         
         return result
-    
+      
+      
+class DenseColBERT(BaseRetrieval):
+    def __init__(
+        self,
+        CFG,
+        training_args,
+        tokenize_fn,
+        data_path: Optional[str] = "retrieval/",
+        context_path: Optional[str] = "wikipedia_documents.json",
+    ) -> None:
+        super().__init__(CFG, training_args, tokenize_fn, data_path, context_path)
 
+    def get_embedding(self) -> None:
+
+        """
+        Summary:
+            Q와 D를 embedding할 기학습된 ColBERT 모델을 불러옵니다.
+            만약 미리 저장된 파일이 없다면 학습을 먼저 시켜야 합니다.
+        """
+        MODEL = "klue/bert-base"
+        # Pickle을 저장합니다.
+        model_name = self.CFG['colbert_model_name']
+        colbert_path = os.path.join('/opt/ml/colbert/best_model', model_name)
+
+        if os.path.isfile(colbert_path):
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+            model_config = AutoConfig.from_pretrained(MODEL)
+            special_tokens = {"additional_special_tokens": ["[Q]", "[D]"]}
+            self.ret_tokenizer = AutoTokenizer.from_pretrained(MODEL)
+            self.ret_tokenizer.add_special_tokens(special_tokens)
+            self.model = ColbertModel.from_pretrained(MODEL)
+            self.model.resize_token_embeddings(self.ret_tokenizer.vocab_size + 2)
+
+            self.model.to(device)
+
+            self.model.load_state_dict(torch.load(colbert_path))
+            print('colbert model loaded')
+            
+            with torch.no_grad():
+                self.model.eval()
+
+                print("Start passage embedding.. ....")
+                self.tokenize_fnbatched_p_embs = []
+                P_BATCH_SIZE = 128
+                # Define a generator for iterating in chunks
+                def chunks(iterable, n, fillvalue=None):
+                    args = [iter(iterable)] * n
+                    return zip_longest(*args, fillvalue=fillvalue)
+
+                for step, batch in enumerate(tqdm(chunks(self.context, P_BATCH_SIZE), total=len(self.context)//P_BATCH_SIZE)):
+                    # The last batch can contain `None` values if the length of `context` is not divisible by 128
+                    batch = [b for b in batch if b is not None]
+
+                    # Tokenize the entire batch at once
+                    p = tokenize_colbert(batch, self.ret_tokenizer, corpus="doc").to("cuda")
+                    p_emb = self.model.doc(**p).to("cpu").numpy()
+                    self.batched_p_embs.append(p_emb)
+                
+                print('p_embs_n_batches: ', len(self.batched_p_embs))
+                print('in_batch_size:\n', self.batched_p_embs[0].shape)
+            
+        else:
+            raise NameError('there is no colbert model in', str(colbert_path))
+
+    def get_relevant_doc_bulk(
+        self, queries: List, k: Optional[int] = 1
+    ) -> Tuple[List, List]:
+
+        """
+        Arguments:
+            queries (List):
+                여러 Queries를 받습니다.
+            k (Optional[int]): 1
+                상위 몇 개의 Passage를 반환할지 정합니다.
+        """
+        
+        with timer("transform"):
+            with torch.no_grad():
+                self.model.eval()
+                q_seqs_val = tokenize_colbert(queries, self.ret_tokenizer, corpus="query").to("cuda")
+                q_emb = self.model.query(**q_seqs_val).to("cpu")
+                print('q_emb_size: \n', q_emb.size())
+        with timer("query ex search"):
+            dot_prod_scores = self.model.get_score(q_emb, self.batched_p_embs, eval=True)
+            print(dot_prod_scores.size())
+
+            rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
+            print(dot_prod_scores)
+            print(rank)
+            print(rank.size())
+            
+        
+        return dot_prod_scores, rank
+
+      
 class DenseRetrieval(BaseRetrieval):
     def __init__(
         self,
@@ -303,7 +476,6 @@ class DenseRetrieval(BaseRetrieval):
             output_dir="dense_retrieval",
             evaluation_strategy="epoch",
             learning_rate=3e-4,
-            lr_scheduler_type= linear,
             per_device_train_batch_size=1,
             per_device_eval_batch_size=1,
             num_train_epochs=1,
@@ -596,8 +768,8 @@ class DenseRetrieval(BaseRetrieval):
         dot_prod_scores = torch.matmul(q_emb, torch.transpose(p_embs, 0, 1))
         rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
         return dot_prod_scores[:k], rank[:k]
-    
 
+      
 class BertEncoder(BertPreTrainedModel):
 
     def __init__(self, config):
@@ -622,58 +794,3 @@ class BertEncoder(BertPreTrainedModel):
         
         pooled_output = outputs[1]
         return pooled_output
-    
-
-if __name__ == "__main__":
-    # setting
-    data_dir = "/opt/ml/input/data/train_dataset/train"
-    model_checkpoint = 'klue/bert-base'
-
-    data = load_from_disk(data_dir)
-    data = data.train_test_split(test_size=0.02, seed=42)
-    train_dataset, valid_dataset = data['train'], data['test']
-    
-    dense_args = TrainingArguments(
-        output_dir="dense_retrieval_1",
-        evaluation_strategy="epoch",
-        learning_rate=3e-4,
-        per_device_train_batch_size=3,
-        per_device_eval_batch_size=3, 
-        num_train_epochs=1,
-        weight_decay=0.01,
-        # evaluation_strategy = 'step',
-        eval_steps=0.25,
-        fp16=True,
-        report_to="wandb",
-    )
-    
-    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-    # retriever = DenseRetrieval(args=dense_args, 
-    #                            dataset=train_dataset, 
-    #                            num_neg=6,
-    #                            tokenizer=tokenizer, 
-    #                            p_encoder=p_encoder, 
-    #                            q_encoder=q_encoder)
-    
-    
-    # retriever.train()
-    # df = retriever.retrieve(valid_dataset, topk=2, args=dense_args)
-    
-    # main_process test
-    with open('/opt/ml/config/use/use_config.yaml') as f:
-        CFG = yaml.load(f, Loader=yaml.FullLoader)
-    retriever = DenseRetrieval(CFG, tokenize_fn=tokenizer.tokenize, num_neg=15)
-    
-    print(f"fininshed init")
-    retriever.get_embedding()
-    
-    # # retrieve 테스트
-    # print(valid_dataset['question'][:10])
-    queries = valid_dataset['question'][:5]
-    score, docs = retriever.get_relevant_doc_bulk(queries, k=10)
-
-    breakpoint()
-    # for query in range(len(queries)):
-    #     for i, idx in enumerate(docs.tolist()[query]):
-    #         print(f"Top-{i + 1}th Passage (Index {idx})")
-    #         print(retriever.dataset['context'][idx])

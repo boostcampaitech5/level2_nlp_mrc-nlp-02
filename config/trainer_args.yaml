@@ -34,7 +34,7 @@ logging_steps: 500.0
 logging_nan_inf_filter: True
 save_strategy: steps
 save_steps: 500.0
-save_total_limit:  # int
+save_total_limit: 2  # int
 save_safetensors: False
 save_on_each_node: False
 no_cuda: False

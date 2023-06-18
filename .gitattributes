@@ -1,0 +1,4 @@
+retrieval/tfidv.bin filter=lfs diff=lfs merge=lfs -text
+retrieval/tfidv_INF.bin filter=lfs diff=lfs merge=lfs -text
+retrieval/sparse_embedding.bin filter=lfs diff=lfs merge=lfs -text
+retrieval/sparse_embedding_INF.bin filter=lfs diff=lfs merge=lfs -text
