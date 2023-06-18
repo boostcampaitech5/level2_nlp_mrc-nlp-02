@@ -13,6 +13,7 @@ import numpy as np
 import torch.nn.functional as F
 
 import retriever_metric
+import utils
 from tqdm.auto import tqdm
 from collections import OrderedDict
 from typing import List, Optional, Tuple, Union
@@ -29,8 +30,6 @@ from transformers import (
     TrainingArguments,
 )
 
-
-
 @contextmanager
 def timer(name):
     t0 = time.time()
@@ -38,7 +37,6 @@ def timer(name):
     print(f"[{name}] done in {time.time() - t0:.3f} s")
 
 
-############### 임시 2
 class BaseRetrieval:
     def __init__(
         self,
@@ -48,7 +46,6 @@ class BaseRetrieval:
         context_path: Optional[str] = "wikipedia_documents.json"
     ) -> None:
         
-        print("BaseRetrieval called")
         """
         Arguments:
             tokenize_fn:
@@ -88,7 +85,6 @@ class BaseRetrieval:
         self.contexts = list(OrderedDict.fromkeys(self.contexts))
         
         self.ids = list(range(len(self.contexts)))
-        
         
     def get_embedding(self) -> None:
         raise NotImplementedError
@@ -166,7 +162,6 @@ class BaseRetrieval:
             }
             if "context" in example.keys() and "answers" in example.keys():
                 # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
-                
                 tmp["original_context"] = example["context"]
                 tmp["answers"] = example["answers"]
                 tmp['context_for_metric'] = [self.contexts[pid] for pid in (doc_indices_topk if self.CFG['option']['use_fuzz'] else doc_indices[idx])]
@@ -181,8 +176,6 @@ class BaseRetrieval:
         raise NotImplementedError
 
 
-
-############### 임시 1
 class SparseBM25(BaseRetrieval):
     def __init__(
         self,
@@ -192,8 +185,7 @@ class SparseBM25(BaseRetrieval):
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> None:
         super().__init__(CFG, tokenize_fn, data_path, context_path)
-        print("SparseBM25 called")
-        
+
     def get_embedding(self) -> None:
 
         """
@@ -234,16 +226,17 @@ class SparseBM25(BaseRetrieval):
         with timer("transform"):
             tokenized_queries = [self.tokenize_fn(query) for query in queries]
         with timer("query ex search"):
-            result = np.array([self.bm25.get_scores(q) for q in tqdm(tokenized_queries)])
+            result = np.array([self.bm25.get_scores(q) for q in tqdm(tokenized_queries, desc='SparseBM25 query ex search')])
         
         
         doc_scores = []
         doc_indices = []
-        for i in range(result.shape[0]):
+        for i in tqdm(range(result.shape[0]), desc='SparseBM25 get relevant doc bulk...'):
             sorted_result = np.argsort(result[i, :])[::-1]
             doc_scores.append(result[i, :][sorted_result].tolist()[:k])
             doc_indices.append(sorted_result.tolist()[:k])
-        return doc_scores, doc_indices   
+        return doc_scores, doc_indices
+    
     
 class SparseBM25_edited(SparseBM25):
     """
@@ -300,16 +293,17 @@ class DenseRetrieval(BaseRetrieval):
         self,
         CFG,
         tokenize_fn,
-        num_neg: Optional[int] = 5,
+        num_neg: Optional[int] = 15,
         data_path: Optional[str] = "/opt/ml/retrieval",
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> None:
         super().__init__(CFG, tokenize_fn, data_path, context_path)
         
         self.args = TrainingArguments(
-            output_dir="dense_retrieval_1",
+            output_dir="dense_retrieval",
             evaluation_strategy="epoch",
             learning_rate=3e-4,
+            lr_scheduler_type= linear,
             per_device_train_batch_size=1,
             per_device_eval_batch_size=1,
             num_train_epochs=1,
@@ -317,7 +311,7 @@ class DenseRetrieval(BaseRetrieval):
         )
         # self.model_name = CFG['model']['model_name']
         self.model_name = 'klue/bert-base'
-        self.data_dir = "/opt/ml/input/data/train_dataset/validation"
+        self.data_dir = "/opt/ml/input/data/train_dataset/train"
         self.dataset = load_from_disk(self.data_dir)
         self.num_neg = num_neg
         
@@ -334,7 +328,7 @@ class DenseRetrieval(BaseRetrieval):
             
             num_neg 만큼 전체 corpus에서 랜던으로 negatives를 뽑아옵니다.
             add_bm25가 켜져있다면, bm25 점수가 높은 negatives를 topk=num_neg 개 만큼 뽑아옵니다.
-            p_with_neg는 pos + num_negs passage를 가지고 있는 배치입니다.
+            p_with_neg는 pos + num_neg passage를 가지고 있는 배치입니다.
             
         Args:
             dataset
@@ -410,7 +404,7 @@ class DenseRetrieval(BaseRetrieval):
             valid_seqs['input_ids'], valid_seqs['attention_mask'], valid_seqs['token_type_ids']
         )
         self.passage_dataloader = DataLoader(passage_dataset, batch_size=self.args.per_device_train_batch_size, drop_last=True)
-        breakpoint()
+
     def get_embedding(self) -> None:
         """
         Summary:
@@ -419,8 +413,8 @@ class DenseRetrieval(BaseRetrieval):
             만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
         """
         
-        p_pickle_name = f"p_dense_embedding_randneg_bm25neg.bin"
-        q_pickle_name = f"q_dense_embedding_randneg_bm25neg.bin"
+        p_pickle_name = "p_dense_embedding_randneg_bm25neg_" + f"B{self.num_neg+1}.bin"
+        q_pickle_name = "q_dense_embedding_randneg_bm25neg_"+ f"B{self.num_neg+1}.bin"
         p_emb_path = os.path.join(self.data_path, p_pickle_name)
         q_emb_path = os.path.join(self.data_path, q_pickle_name)
 
@@ -548,7 +542,7 @@ class DenseRetrieval(BaseRetrieval):
             queries_emb = self.q_encoder(**queries_tok).to(self.args.device)
             
             passage_embs = []
-            for batch in tqdm(self.passage_dataloader, desc='queries retrieve 중'):
+            for batch in tqdm(self.passage_dataloader, desc='DenseRetrieval topk 문서 retrieve 중'):
                 batch = tuple(t.to(self.args.device) for t in batch)
                 
                 passage_inputs = {
@@ -653,11 +647,7 @@ if __name__ == "__main__":
         report_to="wandb",
     )
     
-    # 혹시 위에서 사용한 encoder가 있다면 주석처리 후 진행해주세요 (CUDA ...)
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-    p_encoder = BertEncoder.from_pretrained(model_checkpoint).to(dense_args.device)
-    q_encoder = BertEncoder.from_pretrained(model_checkpoint).to(dense_args.device)
-    
     # retriever = DenseRetrieval(args=dense_args, 
     #                            dataset=train_dataset, 
     #                            num_neg=6,
@@ -672,7 +662,7 @@ if __name__ == "__main__":
     # main_process test
     with open('/opt/ml/config/use/use_config.yaml') as f:
         CFG = yaml.load(f, Loader=yaml.FullLoader)
-    retriever = DenseRetrieval(CFG, tokenizer)
+    retriever = DenseRetrieval(CFG, tokenize_fn=tokenizer.tokenize, num_neg=15)
     
     print(f"fininshed init")
     retriever.get_embedding()
@@ -682,14 +672,8 @@ if __name__ == "__main__":
     queries = valid_dataset['question'][:5]
     score, docs = retriever.get_relevant_doc_bulk(queries, k=10)
 
-
+    breakpoint()
     # for query in range(len(queries)):
     #     for i, idx in enumerate(docs.tolist()[query]):
     #         print(f"Top-{i + 1}th Passage (Index {idx})")
     #         print(retriever.dataset['context'][idx])
-    
-    
-    ####
-    # num_neg 변했는데 사이즈 조절 V
-    # tokenize한 결과 사이즈 확인.... 내가 원하는 대로 잘 되가고있는가? V
-    # 이제 해야할 건, retrieve에 대한 성능 평가
