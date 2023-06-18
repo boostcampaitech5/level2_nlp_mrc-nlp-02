@@ -2,6 +2,7 @@ import json
 import os
 import pickle
 import time
+import torch
 from contextlib import contextmanager
 from typing import List, Optional, Tuple, Union
 
@@ -13,6 +14,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm.auto import tqdm
 from rank_bm25 import BM25Okapi
 from fuzzywuzzy import fuzz
+from ..colbert.model import *
+from ..colbert.tokenizer import *
+from transformers import AutoConfig, AutoTokenizer
+from itertools import zip_longest
 
 
 @contextmanager
@@ -25,6 +30,7 @@ class BaseRetrieval:
     def __init__(
         self,
         CFG,
+        training_args,
         tokenize_fn,
         data_path: Optional[str] = "retrieval/",
         context_path: Optional[str] = "wikipedia_documents.json"
@@ -155,12 +161,13 @@ class SparseTFIDF(BaseRetrieval):
     def __init__(
         self,
         CFG,
+        training_args,
         tokenize_fn,
         data_path: Optional[str] = "retrieval/",
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> None:
         
-        super().__init__(CFG, tokenize_fn, data_path, context_path)
+        super().__init__(CFG, training_args, tokenize_fn, data_path, context_path)
         
         # Transform by vectorizer
         self.tfidfv = TfidfVectorizer(
@@ -234,11 +241,12 @@ class SparseBM25(BaseRetrieval):
     def __init__(
         self,
         CFG,
+        training_args,
         tokenize_fn,
         data_path: Optional[str] = "retrieval/",
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> None:
-        super().__init__(CFG, tokenize_fn, data_path, context_path)
+        super().__init__(CFG, training_args, tokenize_fn, data_path, context_path)
 
     def get_embedding(self) -> None:
 
@@ -290,3 +298,97 @@ class SparseBM25(BaseRetrieval):
             doc_scores.append(result[i, :][sorted_result].tolist()[:k])
             doc_indices.append(sorted_result.tolist()[:k])
         return doc_scores, doc_indices
+
+class DenseColBERT(BaseRetrieval):
+    def __init__(
+        self,
+        CFG,
+        training_args,
+        tokenize_fn,
+        data_path: Optional[str] = "retrieval/",
+        context_path: Optional[str] = "wikipedia_documents.json",
+    ) -> None:
+        super().__init__(CFG, training_args, tokenize_fn, data_path, context_path)
+
+    def get_embedding(self) -> None:
+
+        """
+        Summary:
+            Q와 D를 embedding할 기학습된 ColBERT 모델을 불러옵니다.
+            만약 미리 저장된 파일이 없다면 학습을 먼저 시켜야 합니다.
+        """
+        MODEL = "klue/bert-base"
+        # Pickle을 저장합니다.
+        model_name = self.CFG['colbert_model_name']
+        colbert_path = os.path.join('/opt/ml/colbert/best_model', model_name)
+
+        if os.path.isfile(colbert_path):
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+            model_config = AutoConfig.from_pretrained(MODEL)
+            special_tokens = {"additional_special_tokens": ["[Q]", "[D]"]}
+            self.ret_tokenizer = AutoTokenizer.from_pretrained(MODEL)
+            self.ret_tokenizer.add_special_tokens(special_tokens)
+            self.model = ColbertModel.from_pretrained(MODEL)
+            self.model.resize_token_embeddings(self.ret_tokenizer.vocab_size + 2)
+
+            self.model.to(device)
+
+            self.model.load_state_dict(torch.load(colbert_path))
+            print('colbert model loaded')
+            
+            with torch.no_grad():
+                self.model.eval()
+
+                print("Start passage embedding.. ....")
+                self.tokenize_fnbatched_p_embs = []
+                P_BATCH_SIZE = 128
+                # Define a generator for iterating in chunks
+                def chunks(iterable, n, fillvalue=None):
+                    args = [iter(iterable)] * n
+                    return zip_longest(*args, fillvalue=fillvalue)
+
+                for step, batch in enumerate(tqdm(chunks(self.context, P_BATCH_SIZE), total=len(self.context)//P_BATCH_SIZE)):
+                    # The last batch can contain `None` values if the length of `context` is not divisible by 128
+                    batch = [b for b in batch if b is not None]
+
+                    # Tokenize the entire batch at once
+                    p = tokenize_colbert(batch, self.ret_tokenizer, corpus="doc").to("cuda")
+                    p_emb = self.model.doc(**p).to("cpu").numpy()
+                    self.batched_p_embs.append(p_emb)
+                
+                print('p_embs_n_batches: ', len(self.batched_p_embs))
+                print('in_batch_size:\n', self.batched_p_embs[0].shape)
+            
+        else:
+            raise NameError('there is no colbert model in', str(colbert_path))
+
+    def get_relevant_doc_bulk(
+        self, queries: List, k: Optional[int] = 1
+    ) -> Tuple[List, List]:
+
+        """
+        Arguments:
+            queries (List):
+                여러 Queries를 받습니다.
+            k (Optional[int]): 1
+                상위 몇 개의 Passage를 반환할지 정합니다.
+        """
+        
+        with timer("transform"):
+            with torch.no_grad():
+                self.model.eval()
+                q_seqs_val = tokenize_colbert(queries, self.ret_tokenizer, corpus="query").to("cuda")
+                q_emb = self.model.query(**q_seqs_val).to("cpu")
+                print('q_emb_size: \n', q_emb.size())
+        with timer("query ex search"):
+            dot_prod_scores = self.model.get_score(q_emb, self.batched_p_embs, eval=True)
+            print(dot_prod_scores.size())
+
+            rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
+            print(dot_prod_scores)
+            print(rank)
+            print(rank.size())
+            
+        
+        return dot_prod_scores, rank

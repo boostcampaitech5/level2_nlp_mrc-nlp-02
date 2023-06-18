@@ -8,13 +8,14 @@ input/*
 .netrc
 results/*
 config/use/*
-retrieval/*.bin
-colbert/best_model/*
-colbert/bm25rank_dict.pickle
 force_inference.ipynb
+force_inference.py
 add_noun_adj.ipynb
 back-question.ipynb
-force_inference.py
+retrieval/*.bin
+!colbert/*.py
+colbert
+col_eval.sh
 
 ### Git ###
 # Created by git for backups. To disable backups in Git:

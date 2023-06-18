@@ -1,9 +1,11 @@
 실험명: 실험명
 seed: 42
-retrieval_name: BM25 # SparseTFIDF
+retrieval_name: ColBERT # BM25 SparseTFIDF
 retrieval_list:
   SparseTFIDF: SparseTFIDF
   BM25: SparseBM25
+  ColBERT: DenseColBERT
+colbert_model_name:
 model:
   model_name: klue/roberta-large
   model_path: # finetuning이라면 pretrained의 경로를, 아니라면 model_name을 그대로 써주세요
