@@ -56,7 +56,15 @@ def tokenize_colbert(dataset, tokenizer, corpus):
         return tokenized_query
 
     elif corpus == "doc":
-        preprocessed_data = '[D] '+ dataset
+        if type(dataset) == str:
+            preprocessed_data = '[D] '+ dataset
+            
+        elif type(dataset) == list:
+            preprocessed_data = []
+            for document in dataset:
+                preprocessed_data.append("[D] " + document)
+        else:
+            raise TypeError('doc tokenizer\'s input should be str or list of str')
             
         tokenized_context = tokenizer(
             preprocessed_data, return_tensors="pt", padding="max_length",truncation=True,
