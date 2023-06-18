@@ -1,14 +1,23 @@
 import os
+import re
+import json
+import yaml
 import time
 import torch
 import wandb
 import pickle
+import itertools
 import Levenshtein
 import pandas as pd
 import numpy as np
 import torch.nn.functional as F
 
+import retriever_metric
 from tqdm.auto import tqdm
+from collections import OrderedDict
+from typing import List, Optional, Tuple, Union
+from rank_bm25 import BM25Okapi
+from fuzzywuzzy import fuzz
 from contextlib import contextmanager
 from datasets import Dataset, load_dataset, load_from_disk
 from torch.utils.data import DataLoader, TensorDataset
@@ -20,12 +29,221 @@ from transformers import (
     TrainingArguments,
 )
 
+
+
 @contextmanager
 def timer(name):
     t0 = time.time()
     yield
     print(f"[{name}] done in {time.time() - t0:.3f} s")
+
+
+############### 임시 2
+class BaseRetrieval:
+    def __init__(
+        self,
+        CFG,
+        tokenize_fn,
+        data_path: Optional[str] = "retrieval/",
+        context_path: Optional[str] = "wikipedia_documents.json"
+    ) -> None:
+        
+        print("BaseRetrieval called")
+        """
+        Arguments:
+            tokenize_fn:
+                기본 text를 tokenize해주는 함수입니다.
+                아래와 같은 함수들을 사용할 수 있습니다.
+                - lambda x: x.split(' ')
+                - Huggingface Tokenizer
+                - konlpy.tag의 Mecab
+
+            data_path:
+                데이터가 보관되어 있는 경로입니다.
+
+            context_path:
+                Passage들이 묶여있는 파일명입니다.
+
+            data_path/context_path가 존재해야합니다.
+
+        Summary:
+            Passage 파일을 불러옵니다.
+        """
+        self.CFG = CFG
+        self.tokenize_fn = tokenize_fn        
+        
+        self.data_path = data_path
+        with open(f"/opt/ml/input/data/{context_path}", "r", encoding="utf-8") as f:
+            wiki = json.load(f)
+
+        self.contexts = list(
+            dict.fromkeys([v["text"] for v in wiki.values()])
+        )  # set 은 매번 순서가 바뀌므로
+        print(f"Lengths of unique contexts : {len(self.contexts)}")
+        
+        ## wiki 전처리
+        self.contexts = [re.sub(r"\\n|\n{1,}", " ", context) for context in self.contexts]
+        self.contexts = [re.sub(r"\s{2,}", " ", context) for context in self.contexts]
+        
+        self.contexts = list(OrderedDict.fromkeys(self.contexts))
+        
+        self.ids = list(range(len(self.contexts)))
+        
+        
+    def get_embedding(self) -> None:
+        raise NotImplementedError
     
+    def build_faiss(self, num_clusters=64) -> None:
+        raise NotImplementedError
+    
+    def retrieve(
+        self, query_dataset: Dataset, topk: Optional[int] = 1
+    ) -> Union[Tuple[List, List], pd.DataFrame]:
+
+        """
+        Arguments:
+            query_dataset (Dataset):
+                여러 Query를 포함한 HF.Dataset을 받습니다.
+                `get_relevant_doc_bulk`를 통해 유사도를 구합니다.
+            topk (Optional[int], optional): Defaults to 1.
+                상위 몇 개의 passage를 사용할 것인지 지정합니다.
+
+        Returns:
+            pd.DataFrame: [description]
+
+        Note:
+            Ground Truth가 있는 Query (train/valid) -> 기존 Ground Truth Passage를 같이 반환합니다.
+            Ground Truth가 없는 Query (test) -> Retrieval한 Passage만 반환합니다.
+            
+            use_fuzz: 레벤슈타인 거리 기반 유사도 계산을 통해, 
+                      이미 유사한 Passage가 더 높은 점수로 retrieve 되었다면 가져오지 않도록 filtering
+        """
+
+        # Retrieve한 Passage를 pd.DataFrame으로 반환합니다.
+        total = []
+        alpha = 2
+        with timer("query exhaustive search"):
+            doc_scores, doc_indices = self.get_relevant_doc_bulk(
+                query_dataset["question"], k=max(40 + topk, alpha * topk) if self.CFG['option']['use_fuzz'] else topk
+            )
+        for idx, example in enumerate(
+            tqdm(query_dataset, desc="Sparse retrieval: ")
+        ):
+            if self.CFG['option']['use_fuzz']:
+                doc_scores_topk = [doc_scores[idx][0]]
+                doc_indices_topk = [doc_indices[idx][0]]
+
+                pointer = 1
+
+                while len(doc_indices_topk) != topk:
+                    is_non_duplicate = True
+                    new_text_idx = doc_indices[idx][pointer]
+                    new_text = self.contexts[new_text_idx]
+
+                    for d_id in doc_indices_topk:
+                        if fuzz.ratio(self.contexts[d_id], new_text) > 85:
+                            is_non_duplicate = False
+                            break
+
+                    if is_non_duplicate:
+                        doc_scores_topk.append(doc_scores[idx][pointer])
+                        doc_indices_topk.append(new_text_idx)
+
+                    pointer += 1
+
+                    if pointer == max(40 + topk, alpha * topk):
+                        break
+
+                assert len(doc_indices_topk) == topk, "중복 없는 topk 추출을 위해 alpha 값을 증가시켜 주세요."
+            tmp = {
+                # Query와 해당 id를 반환합니다.
+                "question": example["question"],
+                "id": example["id"],
+                # Retrieve한 Passage의 id, context를 반환합니다.
+                "context": " ".join(
+                    [self.contexts[pid] for pid in (doc_indices_topk if self.CFG['option']['use_fuzz'] else doc_indices[idx])]
+                ),
+            }
+            if "context" in example.keys() and "answers" in example.keys():
+                # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
+                
+                tmp["original_context"] = example["context"]
+                tmp["answers"] = example["answers"]
+                tmp['context_for_metric'] = [self.contexts[pid] for pid in (doc_indices_topk if self.CFG['option']['use_fuzz'] else doc_indices[idx])]
+            total.append(tmp)
+
+        cqas = pd.DataFrame(total)
+        return cqas
+    
+    def get_relevant_doc_bulk(
+        self, queries: List, k: Optional[int] = 1
+    ) -> Tuple[List, List]:
+        raise NotImplementedError
+
+
+
+############### 임시 1
+class SparseBM25(BaseRetrieval):
+    def __init__(
+        self,
+        CFG,
+        tokenize_fn,
+        data_path: Optional[str] = "retrieval/",
+        context_path: Optional[str] = "wikipedia_documents.json",
+    ) -> None:
+        super().__init__(CFG, tokenize_fn, data_path, context_path)
+        print("SparseBM25 called")
+        
+    def get_embedding(self) -> None:
+
+        """
+        Summary:
+            BM25Okapi를 pickle로 저장합니다.
+            만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
+        """
+
+        # Pickle을 저장합니다.
+        pickle_name = f"bm25_embedding.bin"
+        bm25_path = os.path.join(self.data_path, pickle_name)
+
+        if os.path.isfile(bm25_path):
+            with open(bm25_path, "rb") as file:
+                self.bm25 = pickle.load(file)
+            print("BM25 pickle load.")
+        else:
+            print("Build passage embedding")
+            self.bm25 = BM25Okapi(self.contexts, tokenizer=self.tokenize_fn)
+            with open(bm25_path, "wb") as file:
+                pickle.dump(self.bm25, file)
+            print("BM25 pickle saved.")
+
+    def get_relevant_doc_bulk(
+        self, queries: List, k: Optional[int] = 1
+    ) -> Tuple[List, List]:
+
+        """
+        Arguments:
+            queries (List):
+                여러 Queries를 받습니다.
+            k (Optional[int]): 1
+                상위 몇 개의 Passage를 반환할지 정합니다.
+        Note:
+            p_embedding을 따로 저장하지 않기 때문에 TF-IDF보다 비교적 많은 시간이 소요됩니다.
+        """
+
+        with timer("transform"):
+            tokenized_queries = [self.tokenize_fn(query) for query in queries]
+        with timer("query ex search"):
+            result = np.array([self.bm25.get_scores(q) for q in tqdm(tokenized_queries)])
+        
+        
+        doc_scores = []
+        doc_indices = []
+        for i in range(result.shape[0]):
+            sorted_result = np.argsort(result[i, :])[::-1]
+            doc_scores.append(result[i, :][sorted_result].tolist()[:k])
+            doc_indices.append(sorted_result.tolist()[:k])
+        return doc_scores, doc_indices   
     
 class SparseBM25_edited(SparseBM25):
     """
@@ -43,7 +261,7 @@ class SparseBM25_edited(SparseBM25):
         
     def retrieve_except_gold(
        self, query_dataset: Dataset, topk: Optional[int] = 1
-    ) -> Union[Tuple[List, List], pd.DataFrame]:
+    ) -> List:
         # want to get List of strings
         """
         Note:
@@ -53,12 +271,12 @@ class SparseBM25_edited(SparseBM25):
         
         Returns:
         """
-        self.num_neg = self.num_neg + topk
+        # self.num_neg = self.num_neg + topk
         result = []
         alpha = 2
         with timer("query exhaustive search"):
-            doc_scores, doc_indices = self.get_relevant_doc_bulk(
-                query_dataset["question"], k=max(40 + topk, alpha * topk) if self.CFG['option']['use_fuzz'] else topk+1
+            _, doc_indices = self.get_relevant_doc_bulk(
+                query_dataset["question"], k=max(40 + topk, alpha * topk) if self.CFG['option']['use_fuzz'] else topk+2
             )
             
         for idx, example in enumerate(
@@ -70,7 +288,6 @@ class SparseBM25_edited(SparseBM25):
             
                 if dist > min(len(example['context']), len(self.contexts[pid]))//10*2:
                     except_gold.append(self.contexts[pid])
-
             #test_result.extend1([[self.contexts[pid]] for pid in doc_indices[idx] if gold_context[idx] != self.contexts[pid]])
             except_gold = except_gold[:topk]
             result.append(except_gold)
@@ -84,7 +301,7 @@ class DenseRetrieval(BaseRetrieval):
         CFG,
         tokenize_fn,
         num_neg: Optional[int] = 5,
-        data_path: Optional[str] = "../retrieval/",
+        data_path: Optional[str] = "/opt/ml/retrieval",
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> None:
         super().__init__(CFG, tokenize_fn, data_path, context_path)
@@ -93,14 +310,14 @@ class DenseRetrieval(BaseRetrieval):
             output_dir="dense_retrieval_1",
             evaluation_strategy="epoch",
             learning_rate=3e-4,
-            per_device_train_batch_size=3,
-            per_device_eval_batch_size=3, 
+            per_device_train_batch_size=1,
+            per_device_eval_batch_size=1,
             num_train_epochs=1,
             weight_decay=0.01,
         )
         # self.model_name = CFG['model']['model_name']
         self.model_name = 'klue/bert-base'
-        self.data_dir = "../input/data/train_dataset/train"
+        self.data_dir = "/opt/ml/input/data/train_dataset/validation"
         self.dataset = load_from_disk(self.data_dir)
         self.num_neg = num_neg
         
@@ -108,36 +325,66 @@ class DenseRetrieval(BaseRetrieval):
         self.p_encoder = BertEncoder.from_pretrained(self.model_name).to(dense_args.device)
         self.q_encoder = BertEncoder.from_pretrained(self.model_name).to(dense_args.device)
         
-        self.prepare_in_batch_negative(self.dataset, num_neg, self.tokenizer)
+        self.prepare_in_batch_negative(self.dataset, self.num_neg, self.tokenizer, add_bm25=True)
 
-    def prepare_in_batch_negative(self, dataset=None, num_neg=2, tokenizer=None, add_bm25):
-        # random negatives -> in-batch   
+    def prepare_in_batch_negative(self, dataset=None, num_neg=2, tokenizer=None, add_bm25=False):
+        """
+        Note:
+            Dense Embedding을 학습하기 위한 데이터세트를 만듭니다.
+            
+            num_neg 만큼 전체 corpus에서 랜던으로 negatives를 뽑아옵니다.
+            add_bm25가 켜져있다면, bm25 점수가 높은 negatives를 topk=num_neg 개 만큼 뽑아옵니다.
+            p_with_neg는 pos + num_negs passage를 가지고 있는 배치입니다.
+            
+        Args:
+            dataset
+            num_neg
+            tokenizer
+            add_bm25
+            
+        Return: None
+        
+        """
+        
         corpus = np.array(list(set([example for example in dataset['context']])))
         p_with_neg = []
 
         for c in dataset['context']:
+            passage_candidatates = []
             while True:
-                neg_idxs = np.random.randint(len(corpus), size=self.num_neg)
+                neg_idxs = np.random.randint(len(corpus), size=num_neg)
 
                 if not c in corpus[neg_idxs]:
                     p_neg = corpus[neg_idxs]
 
-                    p_with_neg.append(c)
-                    p_with_neg.extend(p_neg)
-                    break
-
-        if add_bm25:
-            # p_with_neg: (전체, num_neg+1)
-            # 1. gold context: (전체)
-            gold_context = [context for context in dataset['context']]
+                    # p_with_neg.apend(c)
+                    # p_with_neg.extend(p_neg)                  # 1차원으로 만들 때 사용
+                    passage_candidatates.append(c)
+                    passage_candidatates.extend(p_neg)
+                    break   
+            p_with_neg.append(passage_candidatates)             # (whole corpus, (1+num_neg))
+                                                                  
             
-            # 2. retrieve not gold but high bm25 docs
-            bm_25_edited = SparseBM25_edited(CFG, tokenize_fn=tokenizer, data_path="../data")
-            not_gold_context = bm_25_edited.retrieve_except_gold(gold_context, valid_data, topk=num_neg)    # list (전체, num_neg)
+        if add_bm25:
+            # 1. gold context: (전체)
+            # gold_context = [context for context in dataset['context']]
+            # valid_dataset = load_from_disk("/opt/ml/input/data/train_dataset/")['validation']
+            
+            # 2. retrieve not gold but high bm25 score docs
+            bm_25_neg = SparseBM25_edited(CFG, tokenize_fn=tokenizer.tokenize, data_path="/opt/ml/input/data")
+            bm_25_neg.get_embedding()
+            not_gold_context = bm_25_neg.retrieve_except_gold(dataset, topk=num_neg)    # list (전체, num_neg)
         
             # 3. extend
-            for idx, rows in enumerate(p_with_neg):
-                p_with_neg.extend(not_gold_context[idx])
+            for idx, rows in enumerate(not_gold_context):
+                p_with_neg[idx].extend(not_gold_context[idx])   # (whole corpus, (1+num_neg+bm25_topk))
+                
+            # 4. bm25를 추가하면 self.num_neg가 두 배가 된다.
+            self.num_neg = self.num_neg + num_neg
+            num_neg = self.num_neg
+        
+        # 2차원 -> 1차원으로 변경(for tokenize)
+        p_with_neg = list(itertools.chain(*p_with_neg))
         
         # (Question, Passage) 데이터셋
         q_seqs = tokenizer(dataset['question'], padding="max_length", truncation=True, return_tensors='pt')
@@ -145,8 +392,8 @@ class DenseRetrieval(BaseRetrieval):
         
         max_len = p_seqs['input_ids'].size(-1)
         
-        # p_seqs org size (B*(num_neg+1), tokenizer_max_length) -> (B, (num_neg+1), tokenizer_max_length)
-        # q_seqs size (B, tokenizer_max_length=512)
+        # p_seqs org size (C*(num_neg+1), tokenizer_max_length) -> (C, (num_neg+1), tokenizer_max_length)
+        # q_seqs size (C, tokenizer_max_length=512)
         p_seqs['input_ids'] = p_seqs['input_ids'].view(-1, num_neg+1, max_len)
         p_seqs['attention_mask'] = p_seqs['attention_mask'].view(-1, num_neg+1, max_len)
         p_seqs['token_type_ids'] = p_seqs['token_type_ids'].view(-1, num_neg+1, max_len)
@@ -163,7 +410,7 @@ class DenseRetrieval(BaseRetrieval):
             valid_seqs['input_ids'], valid_seqs['attention_mask'], valid_seqs['token_type_ids']
         )
         self.passage_dataloader = DataLoader(passage_dataset, batch_size=self.args.per_device_train_batch_size, drop_last=True)
-
+        breakpoint()
     def get_embedding(self) -> None:
         """
         Summary:
@@ -172,8 +419,8 @@ class DenseRetrieval(BaseRetrieval):
             만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
         """
         
-        p_pickle_name = f"p_dense_embedding_randneg.bin"
-        q_pickle_name = f"q_dense_embedding.bin"
+        p_pickle_name = f"p_dense_embedding_randneg_bm25neg.bin"
+        q_pickle_name = f"q_dense_embedding_randneg_bm25neg.bin"
         p_emb_path = os.path.join(self.data_path, p_pickle_name)
         q_emb_path = os.path.join(self.data_path, q_pickle_name)
 
@@ -196,7 +443,7 @@ class DenseRetrieval(BaseRetrieval):
 
     def train(self, args=None, CFG=None):
         folder_name, save_path = utils.get_folder_name(CFG)
-        wandb.init(name=folder_name+'dense_embedding', project=CFG['wandb']['project'], 
+        wandb.init(name=folder_name+'_dense_embedding', project=CFG['wandb']['project'], 
             entity=CFG['wandb']['id'], dir=save_path)
         
         if args is None:
@@ -236,7 +483,7 @@ class DenseRetrieval(BaseRetrieval):
                     targets = torch.zeros(batch_size).long() # positive example은 전부 첫 번째에 위치하므로
                     targets = targets.to(args.device)
 
-                    # input:(B, num_neg+1, max_len) -> (B*(num_leg+1), max_len=512)
+                    # input:(B, num_neg+1, max_len) -> (B*(num_neg+1), max_len=512)
                     p_inputs = {
                         'input_ids': batch[0].view(batch_size * (self.num_neg + 1), -1).to(args.device),
                         'attention_mask': batch[1].view(batch_size * (self.num_neg + 1), -1).to(args.device),
@@ -385,7 +632,7 @@ class BertEncoder(BertPreTrainedModel):
 
 if __name__ == "__main__":
     # setting
-    data_dir = "../input/data/train_dataset/train"
+    data_dir = "/opt/ml/input/data/train_dataset/train"
     model_checkpoint = 'klue/bert-base'
 
     data = load_from_disk(data_dir)
@@ -423,16 +670,26 @@ if __name__ == "__main__":
     # df = retriever.retrieve(valid_dataset, topk=2, args=dense_args)
     
     # main_process test
-    with open('../config/use/use_config.yaml') as f:
+    with open('/opt/ml/config/use/use_config.yaml') as f:
         CFG = yaml.load(f, Loader=yaml.FullLoader)
     retriever = DenseRetrieval(CFG, tokenizer)
+    
+    print(f"fininshed init")
     retriever.get_embedding()
     
     # # retrieve 테스트
     # print(valid_dataset['question'][:10])
     queries = valid_dataset['question'][:5]
     score, docs = retriever.get_relevant_doc_bulk(queries, k=10)
+
+
     # for query in range(len(queries)):
     #     for i, idx in enumerate(docs.tolist()[query]):
     #         print(f"Top-{i + 1}th Passage (Index {idx})")
     #         print(retriever.dataset['context'][idx])
+    
+    
+    ####
+    # num_neg 변했는데 사이즈 조절 V
+    # tokenize한 결과 사이즈 확인.... 내가 원하는 대로 잘 되가고있는가? V
+    # 이제 해야할 건, retrieve에 대한 성능 평가
