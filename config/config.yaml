@@ -13,12 +13,12 @@ model:
   attention_probs_dropout_prob: 0.1
   num_hidden_layers: 12
   hidden_dropout_prob: 0.1
-  option: #question_masking, cnn, both, original
+  option: # question_masking, cnn, both, original
   select_option:
     question_masking: AutoModelForQuestionAnsweringAndMLM
     cnn: AutoModelForQuestionAnsweringAndCNN
     original: AutoModelForQuestionAnswering
-  pretrain: # None, korquad_1.0.csv, aug_v1.csv, aug_v2.csv, korquad_1.0_noun_adj.csv
+  pretrain: # null, korquad_1.0.csv, aug_v1.csv, aug_v2.csv, korquad_1.0_noun_adj.csv
 tokenizer:
   max_seq_length: 384
   pad_to_max_length: False

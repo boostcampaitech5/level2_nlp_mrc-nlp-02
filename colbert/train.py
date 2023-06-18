@@ -23,8 +23,8 @@ from transformers import (
     set_seed,
 )
 
-BM25_USED = False
-pretrain = True
+BM25_USED = True
+pretrain = False
 
 def main():
     
@@ -32,15 +32,15 @@ def main():
     
     batch_size = 15
     data_path = "../input/data/train_dataset"
-    load_weight_path = None #'/opt/ml/colbert/best_model/colbert_pretrain_v2.pth'   
-    lr = 4e-5
+    load_weight_path = '/opt/ml/colbert/best_model/compare_colbert_pretrain_v3_7.pth'   
+    lr = 2e-6
     args = TrainingArguments(
         output_dir="dense_retrieval",
         evaluation_strategy="epoch",
         learning_rate=lr,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
-        num_train_epochs=12,
+        num_train_epochs=6,
         weight_decay=0.01,
         warmup_steps=900
     )
@@ -160,7 +160,7 @@ def main():
 
     print("model train...")
     trained_model = train(args, train_dataset, model)
-    torch.save(trained_model.state_dict(), f"./best_model/colbert_pretrain_v3.pth")
+    torch.save(trained_model.state_dict(), f"./best_model/colbert_pretrain_v3_finetune.pth")
 
 
 def train(args, dataset, model):
@@ -258,8 +258,7 @@ def train(args, dataset, model):
             torch.cuda.empty_cache()
         final_loss = total_loss / len(dataset)
         print("total_loss :", final_loss)
-        if epoch > 3:
-            torch.save(model.state_dict(), f"./best_model/compare_colbert_pretrain_v3_{epoch+1}.pth")
+        torch.save(model.state_dict(), f"./best_model/compare_colbert_pretrain_v3_finetune_{epoch+1}.pth")
 
     return model
 
