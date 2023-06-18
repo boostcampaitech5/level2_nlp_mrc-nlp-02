@@ -15,6 +15,7 @@ colbert
 !colbert/*.py
 back-question.ipynb
 retrieval
+col_eval.sh
 
 ### Git ###
 # Created by git for backups. To disable backups in Git:
