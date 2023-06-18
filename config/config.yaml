@@ -4,6 +4,7 @@ retrieval_name: SparseTFIDF
 retrieval_fuzz: True
 retrieval_list:
   SparseTFIDF: SparseTFIDF
+colbert_model_name:
 model:
   model_name: klue/bert-base
   num_attention_heads: 12

@@ -17,7 +17,11 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
+"""
 
+마지막 연산 단계에서 PAD와 punctuation을 걸러내는 filter는 아직 미구현 되어있음.
+
+"""
 class ColbertModel(BertPreTrainedModel):
     def __init__(self, config):
         super(ColbertModel, self).__init__(config)
@@ -33,8 +37,9 @@ class ColbertModel(BertPreTrainedModel):
         Q = self.query(**q_inputs)
         D = self.doc(**p_inputs)
         if n_inputs:
-            N = self.doc(**n_inputs)
-            return self.get_score(Q, D, N)
+            N1 = self.doc(**n_inputs[0])
+            N2 = self.doc(**n_inputs[1])      
+            return self.get_score(Q, D, (N1, N2))       
         else:
             return self.get_score(Q, D)
 
@@ -54,46 +59,45 @@ class ColbertModel(BertPreTrainedModel):
             if self.similarity_metric == "cosine":
                 final_score = torch.tensor([])
                 for D_batch in tqdm(D):
-                    D_batch = np.array(D_batch)
-                    D_batch = torch.Tensor(D_batch).squeeze()
-                    print(D_batch.shape)
-                    p_seqeunce_output = D_batch.transpose(
+                    D_batch = torch.Tensor(np.array(D_batch)).squeeze() # (p_batch_size, p_sequence_length, hidden_size)
+                    p_sequence_output = D_batch.transpose(
                         1, 2
-                    )  # (batch_size,hidden_size,p_sequence_length)
+                    )  # (p_batch_size, hidden_size, p_sequence_length)
                     q_sequence_output = Q.view(
                         Q.shape[0], 1, -1, self.dim
-                    )  # (batch_size, 1, q_sequence_length, hidden_size)
+                    )  # (q_batch_size, 1, q_sequence_length, hidden_size)
                     dot_prod = torch.matmul(
-                        q_sequence_output, p_seqeunce_output
-                    )  # (batch_size,batch_size, q_sequence_length, p_seqence_length)
+                        q_sequence_output, p_sequence_output
+                    )  # (q_batch_size, p_batch_size, q_sequence_length, p_sequence_length)
                     max_dot_prod_score = torch.max(dot_prod, dim=3)[
                         0
-                    ]  # (batch_size,batch_size,q_sequnce_length)
-                    score = torch.sum(max_dot_prod_score, dim=2)  # (batch_size,batch_size)
+                    ]   # (q_batch_size, p_batch_size, q_sequnce_length)
+                    score = torch.sum(max_dot_prod_score, dim=2)  # (q_batch_size, p_batch_size)
                     final_score = torch.cat([final_score, score], dim=1)
-                print(final_score.size())
+                print(final_score.size()) #(q_batch_size, num_whole_p)
                 return final_score
 
         else:
             if self.similarity_metric == "cosine":
-
-                p_seqeunce_output = D.transpose(
+                
+                p_sequence_output = D.transpose(
                     1, 2
-                )  # (batch_size, hidden_size, p_sequence_length)
+                )  # (batch_size, hidden_size, p_sequence_length)              
                 if N:
-                    n_seqeunce_output = N.transpose(1, 2)
-                    p_seqeunce_output = torch.cat(
-                        [p_seqeunce_output, n_seqeunce_output], dim=0
-                    )  # (hard_negative_size, hidden_size, p_sequence_length)
+                    n1_sequence_output = N[0].transpose(1, 2)
+                    n2_sequence_output = N[1].transpose(1, 2)
+                    p_sequence_output = torch.cat(
+                        [p_sequence_output, n1_sequence_output, n2_sequence_output], dim=0
+                    )  # (batch_size,+ hard_negative_size, hidden_size, p_sequence_length)
                 q_sequence_output = Q.view(
                     Q.shape[0], 1, -1, self.dim
                 )  # (batch_size, 1, q_sequence_length, hidden_size)
                 dot_prod = torch.matmul(
-                    q_sequence_output, p_seqeunce_output
-                )  # (batch_size,batch_size, q_sequence_length, p_seqence_length)
+                    q_sequence_output, p_sequence_output
+                )  # (batch_size, batch_size + hard_negative_size, q_sequence_length, p_seqence_length)
                 max_dot_prod_score = torch.max(dot_prod, dim=3)[
                     0
-                ]  # (batch_size,batch_size,q_sequnce_length)
-                final_score = torch.sum(max_dot_prod_score, dim=2)  # (batch_size,batch_size)
-
+                ]  # (batch_size, batch_size + hard_negative_size, q_sequnce_length)
+                final_score = torch.sum(max_dot_prod_score, dim=2)  # (batch_size, batch_size + hard_negative_size)
+                
                 return final_score
