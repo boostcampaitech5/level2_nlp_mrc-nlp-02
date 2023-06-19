@@ -5,6 +5,13 @@
 ids_base = 0      # max entity 어떤 걸로 할 것인지 지정 (0이라면 PERSON)
 range_num = 2     # 얼마나 불릴 것인지 (1 이상 설정 권장)
 part = True       # 멈춤 현상을 방지하기 위해 나눠서 진행함  /opt/ml/input/data/nerQG/ 폴더에 csv가 한 400개쯤 만들어짐. 싫다면 False로 해 두길 권장.
+
+
+ner_list = ['PERSON', 'EVENT', 'ORGANIZATION',  'DATE', 'TIME', 'LOCATION']  # 현재 선택된 엔티티, 필요한 엔티티 취사 선택
+# ner_list = ['PERSON','EVENT']
+num_dynamic = True   #false라면 아래 줄의 num_list 지정해 주면 됨 (list 길이는 ner_list와 동일)
+num_list = [10,1,1,1,1]  # 각 엔티티 별로 숫자를 지정해 주고 싶다면  num_list 만들어서 넣어줘도 됨
+
 # -------------config-----------------------------
 
 
@@ -17,10 +24,12 @@ from pororo import Pororo
 
 print('making data folder...')
 data_path = '/opt/ml/input/data/nerQ/'
+
 if os.path.exists(data_path):
     print('floder exists...')
     pass
 else:
+    print('making floder ...')
     os.mkdir(data_path)
 
 print('open wiki csv...')
@@ -29,8 +38,6 @@ print('making Dataframe...')
 df_wiki_ner = df.copy()
 # df_wiki_ner = df_wiki_ner.head(800).copy()
 
-ner_list = ['PERSON', 'EVENT', 'ORGANIZATION',  'DATE', 'TIME', 'LOCATION']  # 현재 선택된 엔티티
-# ner_list = ['PERSON','EVENT']
 print(f"entitiy list...{ner_list}")
 
 def pop_dict(x):
@@ -55,18 +62,24 @@ print(len(df_wiki_ner))
 df_add = pd.DataFrame()
 for i in range(range_num):
     print(i)
-    num_list = []
-    for ne in ner_list:
-        print(ne)
-        df_wiki_ner['k_'+ne] = df_wiki_ner['context_ner'].apply(lambda x: ne in (x).keys())   # 각 entity가 들어있는지를 하나의 컬럼으로 만들어 줌
-        num_list.append(num_T('k_'+ne,df_wiki_ner))    # ex) 전체 데이터가 300개라면, person을 가진 문장은 30개, event를 가진 문장은 20개라면 30개 기준으로 비율 나눠주고 싶어서 먼저 20개라 30개 라는걸 담을 수 있는 list로 만들어 둠.
-    print(num_list)
+
+    if num_dynamic:
+        num_list = []
+        for ne in ner_list:
+            print(ne)
+            df_wiki_ner['k_'+ne] = df_wiki_ner['context_ner'].apply(lambda x: ne in (x).keys())   # 각 entity가 들어있는지를 하나의 컬럼으로 만들어 줌
+            num_list.append(num_T('k_'+ne,df_wiki_ner))    # ex) 전체 데이터가 300개라면, person을 가진 문장은 30개, event를 가진 문장은 20개라면 30개 기준으로 비율 나눠주고 싶어서 먼저 20개라 30개 라는걸 담을 수 있는 list로 만들어 둠.
+        print(num_list)
 
 
-    print([min(round(num_list[ids_base]),num_list[0]), min(num_list[ids_base],num_list[1]), min(num_list[ids_base],num_list[2]), min(round(num_list[ids_base]*8/24),num_list[3]), min(round(num_list[ids_base]*8/24),num_list[4]), min(round(num_list[ids_base]*12/24),num_list[5]) ])
-    num_list = [min(round(num_list[ids_base]),num_list[0]), min(num_list[ids_base],num_list[1]), min(num_list[ids_base],num_list[2]), min(round(num_list[ids_base]*8/24),num_list[3]), min(round(num_list[ids_base]*8/24),num_list[4]), min(round(num_list[ids_base]*12/24),num_list[5]) ]
-    # 위에서 지정한 비율대로 num_list 재배치
+        print([min(round(num_list[ids_base]),num_list[0]), min(num_list[ids_base],num_list[1]), min(num_list[ids_base],num_list[2]), min(round(num_list[ids_base]*8/24),num_list[3]), min(round(num_list[ids_base]*8/24),num_list[4]), min(round(num_list[ids_base]*12/24),num_list[5]) ])
+        num_list = [min(round(num_list[ids_base]),num_list[0]), min(num_list[ids_base],num_list[1]), min(num_list[ids_base],num_list[2]), min(round(num_list[ids_base]*8/24),num_list[3]), min(round(num_list[ids_base]*8/24),num_list[4]), min(round(num_list[ids_base]*12/24),num_list[5]) ]
+        # 위에서 지정한 비율대로 num_list 재배치  : 현재는 [24,24,24,8,8,12] 비율로 동적으로 진행됨
+
+    else:
+        num_list = num_list
     
+
     for (i,ne) in enumerate(ner_list):
         print(ne)
         # if num_list[i]<p_num:
