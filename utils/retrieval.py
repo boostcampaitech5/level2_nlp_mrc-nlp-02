@@ -18,14 +18,12 @@ from utils import utils
 from tqdm.auto import tqdm
 from fuzzywuzzy import fuzz
 from rank_bm25 import BM25Okapi
-from collections import OrderedDict
-from contextlib import contextmanager
-from typing import List, Optional, Tuple, Union
+from fuzzywuzzy import fuzz
+from ..colbert.model import *
+from ..colbert.tokenizer import *
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.feature_extraction.text import TfidfVectorizer
 from datasets import Dataset, concatenate_datasets, load_from_disk
-# from ..colbert.model import *
-# from ..colbert.tokenizer import *
 from itertools import zip_longest
 from transformers import (
     AutoConfig,
@@ -124,7 +122,7 @@ class BaseRetrieval:
                 query_dataset["question"], k=max(40 + topk, alpha * topk) if self.CFG['option']['use_fuzz'] else topk
             )
         for idx, example in enumerate(
-            tqdm(query_dataset, desc="Sparse retrieval: ")
+            tqdm(query_dataset, desc="Ranking...: ")
         ):
             if self.CFG['option']['use_fuzz']:
                 doc_scores_topk = [doc_scores[idx][0]]
@@ -410,14 +408,14 @@ class DenseColBERT(BaseRetrieval):
                 self.model.eval()
 
                 print("Start passage embedding.. ....")
-                self.tokenize_fnbatched_p_embs = []
+                self.batched_p_embs = []
                 P_BATCH_SIZE = 128
                 # Define a generator for iterating in chunks
                 def chunks(iterable, n, fillvalue=None):
                     args = [iter(iterable)] * n
                     return zip_longest(*args, fillvalue=fillvalue)
 
-                for step, batch in enumerate(tqdm(chunks(self.context, P_BATCH_SIZE), total=len(self.context)//P_BATCH_SIZE)):
+                for step, batch in enumerate(tqdm(chunks(self.contexts, P_BATCH_SIZE), total=len(self.contexts)//P_BATCH_SIZE)):
                     # The last batch can contain `None` values if the length of `context` is not divisible by 128
                     batch = [b for b in batch if b is not None]
 
@@ -460,7 +458,7 @@ class DenseColBERT(BaseRetrieval):
             print(rank.size())
             
         
-        return dot_prod_scores, rank
+        return dot_prod_scores[:,:k].tolist(), rank
 
       
 class DenseRetrieval(BaseRetrieval):
@@ -805,4 +803,4 @@ class BertEncoder(BertPreTrainedModel):
         )
         
         pooled_output = outputs[1]
-        return pooled_output
+        return pooled_output[:,:k].tolist()
