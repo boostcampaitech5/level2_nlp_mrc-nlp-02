@@ -492,11 +492,12 @@ class DenseRetrieval(BaseRetrieval):
             output_dir="dense_retrieval",
             evaluation_strategy="epoch",
             learning_rate=3e-4,
-            per_device_train_batch_size=5,
-            per_device_eval_batch_size=5,
+            per_device_train_batch_size=8,
+            per_device_eval_batch_size=8,
             num_train_epochs=3,
             weight_decay=0.01,
             gradient_accumulation_steps=4,
+            fp16=True,
         )
         self.CFG = CFG
         self.training_args = training_args
@@ -516,15 +517,15 @@ class DenseRetrieval(BaseRetrieval):
         )
         self.passage_dataloader = DataLoader(passage_dataset, batch_size=self.args.per_device_train_batch_size, drop_last=True)
         
-    def prepare_in_batch_negative(self, dataset=None, num_neg=2, tokenizer=None, add_bm25=False):
+    def prepare_negative(self, dataset=None, num_neg=2, tokenizer=None, add_bm25=False):
         """
         Note:
-            Dense Embedding을 학습하기 위한 데이터세트를 만듭니다.
+            Dense Embedding을 학습하기 위한 데이터세트를 만듭니다. (In-batch가 아닌, 임의로 랜덤 negs를 골라오는 방식.)
             
-            num_neg 만큼 전체 corpus에서 랜던으로 negatives를 뽑아옵니다.
-            add_bm25가 켜져있다면, bm25 점수가 높은 negatives를 topk=num_neg 개 만큼 뽑아옵니다.
-            p_with_neg는 pos + num_neg passage를 가지고 있는 배치입니다.
-            
+            num_neg 만큼 전체 corpus에서 랜덤으로 negatives를 뽑아옵니다.
+            add_bm25가 켜져있다면, bm25 점수가 높은 negatives를 topk=bm25_topk 개 만큼 뽑아옵니다.
+            p_with_neg는 pos + Rand Neg passage를 가지고 있는 1차원 리스트.
+            bm25_neg는 topk개를 의 Neg passage를 가지고 있는 1차원 리스트.
         Args:
             dataset
             num_neg
@@ -563,7 +564,7 @@ class DenseRetrieval(BaseRetrieval):
             # 2. retrieve not gold but high bm25 score docs
             bm_25_neg = SparseBM25_edited(self.CFG, self.training_args, tokenize_fn=tokenizer.tokenize)
             bm_25_neg.get_embedding()
-            not_gold_context = bm_25_neg.retrieve_except_gold(dataset, topk=self.bm25_topk)    # list (전체, topk)        # bm25개수가 num_neg+1과 다를 때...
+            not_gold_context = bm_25_neg.retrieve_except_gold(dataset, topk=self.bm25_topk)    # list (전체, topk)        # bm25개수가 num_neg+1과 다를 때 추가 수정이 필요함.
         
             # 3. extend
             for idx, rows in enumerate(not_gold_context):
@@ -596,7 +597,7 @@ class DenseRetrieval(BaseRetrieval):
         bm25_seqs['token_type_ids'] = bm25_seqs['token_type_ids'].view(-1, self.bm25_topk, max_len)
 
         train_dataset = TensorDataset(
-            p_seqs['input_ids'], p_seqs['attention_mask'], p_seqs['token_type_ids'], 
+            p_seqs['input_ids'], p_seqs['attention_mask'], p_seqs['token_type_ids'],            # 각각은 결국 (C, num_neg, max_len) 이다.   ->
             q_seqs['input_ids'], q_seqs['attention_mask'], q_seqs['token_type_ids'],
             bm25_seqs['input_ids'], bm25_seqs['attention_mask'], bm25_seqs['token_type_ids'],
         )
@@ -611,8 +612,8 @@ class DenseRetrieval(BaseRetrieval):
             만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
         """
         
-        p_pickle_name = "p_dense_embedding_randneg_bm25neg_" + f"B{(self.num_neg+1)*self.args.gradient_accumulation_steps}.pth"
-        q_pickle_name = "q_dense_embedding_randneg_bm25neg_"+ f"B{(self.num_neg+1)*self.args.gradient_accumulation_steps}.pth"
+        p_pickle_name = "p_dense_embedding_randneg_bm25neg_" + f"B{(self.num_neg+1)*self.args.per_device_train_batch_size*self.args.gradient_accumulation_steps}.pth"
+        q_pickle_name = "q_dense_embedding_randneg_bm25neg_"+ f"B{(self.num_neg+1)*self.args.per_device_train_batch_size*self.args.gradient_accumulation_steps}.pth"
         p_emb_path = os.path.join(self.data_path, p_pickle_name)
         q_emb_path = os.path.join(self.data_path, q_pickle_name)
         
@@ -629,7 +630,7 @@ class DenseRetrieval(BaseRetrieval):
         else:
             print("\nEmbeddings are not detected!! Prepare Negatives in batch...")
             print(f"Training with this data:\n{self.dataset}\n")
-            self.prepare_in_batch_negative(self.dataset, self.num_neg, self.tokenizer, add_bm25=True)
+            self.prepare_negative(self.dataset, self.num_neg, self.tokenizer, add_bm25=True)
             print("Build dense embedding...")
             self.train(CFG=self.CFG)
             
@@ -663,6 +664,9 @@ class DenseRetrieval(BaseRetrieval):
         t_total = len(self.train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total)
 
+        if self.args.fp16:
+            scaler = torch.cuda.amp.GradScaler(enabled=True)
+        
         # Start training!
         global_step = 0
         loss_accumulate = 0.0
@@ -704,32 +708,35 @@ class DenseRetrieval(BaseRetrieval):
                         'token_type_ids': batch[8].view(batch_size * self.bm25_topk, -1).to(args.device)
                     }
                     
-                    p_outputs = self.p_encoder(**p_inputs)          # (batch_size*(num_neg+1), emb_dim) -> (B*(N+1), S, H)
-                    q_outputs = self.q_encoder(**q_inputs)          # (batch_size*, emb_dim)            -> (B, S, H)
-                    bm25_outputs = self.p_encoder(**bm25_inputs)    # (batch_size*(self.bm25_topk), emb_dim)   -> (B*(N+1), S, H)
+                    if self.args.fp16:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
+                            p_outputs = self.p_encoder(**p_inputs)          # (batch_size*(num_neg+1), emb_dim) -> (B*(N+1), S, H)
+                            q_outputs = self.q_encoder(**q_inputs)          # (batch_size*, emb_dim)            -> (B, S, H)
+                            bm25_outputs = self.p_encoder(**bm25_inputs)    # (batch_size*(self.bm25_topk), emb_dim)   -> (B*(N+1), S, H)
 
-                    # Calculate similarity score & loss
-                    p_outputs = p_outputs.view(batch_size, self.num_neg + 1, -1)
-                    q_outputs = q_outputs.view(batch_size, 1, -1)
-                    bm25_outputs = bm25_outputs.view(batch_size, self.bm25_topk, -1)
-                    p_outputs = torch.cat([p_outputs, bm25_outputs], dim=1)                        # (batch_size, 1+RandNeg+bm25Neg, seq_len*emb_dim)
-                    
-                    sim_scores = torch.bmm(q_outputs, torch.transpose(p_outputs, 1, 2)).squeeze()  # (batch_size, 1+RandNeg+bm25Neg)
-                    sim_scores = sim_scores.view(batch_size, -1)
-                    sim_scores = F.log_softmax(sim_scores, dim=1)
-                    
-                    loss = F.nll_loss(sim_scores, targets)
-                    tepoch.set_postfix(loss=f'{str(loss.item())}')
-
-                    # gradient accumulation을 수행하도록 loss만 축적합니다.
-                    loss = loss / args.gradient_accumulation_steps
-                    loss.backward()
-                    loss_accumulate += loss.item()
+                            # Calculate similarity score & loss
+                            p_outputs = p_outputs.view(batch_size, self.num_neg + 1, -1)
+                            q_outputs = q_outputs.view(batch_size, 1, -1)
+                            bm25_outputs = bm25_outputs.view(batch_size, self.bm25_topk, -1)
+                            p_outputs = torch.cat([p_outputs, bm25_outputs], dim=1)                        # (batch_size, 1+RandNeg+bm25Neg, seq_len*emb_dim)
+                            
+                            sim_scores = torch.bmm(q_outputs, torch.transpose(p_outputs, 1, 2)).squeeze()  # (batch_size, 1+RandNeg+bm25Neg)
+                            sim_scores = sim_scores.view(batch_size, -1)
+                            sim_scores = F.log_softmax(sim_scores, dim=1)
+                            
+                            loss = F.nll_loss(sim_scores, targets)
+                            tepoch.set_postfix(loss=f'{str(loss.item())}')
+                            
+                        # gradient accumulation을 수행하도록 loss만 축적합니다.
+                        loss = loss / args.gradient_accumulation_steps
+                        scaler.scale(loss).backward()
+                        loss_accumulate += loss.item()
                     
                     if global_step % args.gradient_accumulation_steps == 0:
-                        optimizer.step()
+                        scaler.step(optimizer)
                         scheduler.step()
-
+                        scaler.update()
+                        
                         self.p_encoder.zero_grad()
                         self.q_encoder.zero_grad()
                         torch.cuda.empty_cache()
