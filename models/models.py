@@ -34,7 +34,7 @@ class AutoModelForQuestionAnsweringAndCNN(nn.Module):
         T = CFG['tokenizer']['max_seq_length']
         H = config.hidden_size
 
-        self.PLM = AutoModel.from_pretrained(CFG['model']['model_name'])
+        self.PLM = AutoModel.from_pretrained(CFG['model']['model_name'], config=config)
         self.cnn_block_1 = CNN_BLOCK(T, H)
         self.cnn_block_2 = CNN_BLOCK(T, H)
         self.cnn_block_3 = CNN_BLOCK(T, H)

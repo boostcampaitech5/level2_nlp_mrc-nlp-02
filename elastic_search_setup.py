@@ -5,7 +5,7 @@ import json
 
 class ElasticSearchClient:
     def __init__(self, args):
-        self._ES_URL = "http://localhost:9200"
+        self._ES_URL = "http://localhost:443"
         self.es_client = Elasticsearch(self._ES_URL, timeout = 30, max_retries=10, retry_on_timeout=True)
         self.index = args.index_name
         print(f'Ping Elasticsearch Server : {self.es_client.ping}')
