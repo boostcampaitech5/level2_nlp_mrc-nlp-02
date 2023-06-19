@@ -18,9 +18,10 @@ from utils import utils
 from tqdm.auto import tqdm
 from fuzzywuzzy import fuzz
 from rank_bm25 import BM25Okapi
-from fuzzywuzzy import fuzz
 from colbert.model import *
 from colbert.tokenizer import *
+from contextlib import contextmanager
+from typing import List, Optional, Tuple, Union
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.feature_extraction.text import TfidfVectorizer
 from datasets import Dataset, concatenate_datasets, load_from_disk
