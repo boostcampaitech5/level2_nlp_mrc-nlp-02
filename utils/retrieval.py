@@ -291,7 +291,7 @@ class SparseBM25(BaseRetrieval):
             print("BM25 pickle saved.")
 
     def get_relevant_doc_bulk(
-        self, queries: List, k: Optional[int] = 1, for_train='False',
+        self, queries: List, k: Optional[int] = 1, for_train=False,
     ) -> Tuple[List, List]:
 
         """
@@ -304,25 +304,37 @@ class SparseBM25(BaseRetrieval):
             p_embedding을 따로 저장하지 않기 때문에 TF-IDF보다 비교적 많은 시간이 소요됩니다.
             for_train 인자를 넘기면 저장할 수 있도록 기능을 추가하였습니다.
         """
-        if for_train:
-            bm25_docs_name = "bm25_relevant_docs_for_training.npy"
+        if for_train:       # dense embedding에서 호출하는 경우엔 무조건 train에 대해서만 호출한다 -> 저장된 파일을 save and load
+            bm25_docs_name = "bm25_relevant_docs_for_DenseEmbedding.npy"
             bm25_docs_path = os.path.join(self.data_path, bm25_docs_name)
-            print("BM25 is now used for training.")
+            print("BM25 is now used for 'Dense Embedding' training.")
             
-        if for_train and os.path.isfile(bm25_docs_path):
-            result = np.load(bm25_docs_path)
-            print("BM25 top docs loaded for training!")
+            if os.path.isfile(bm25_docs_path):
+                result = np.load(bm25_docs_path)
+                print("BM25 top docs loaded!")
             
-        else: 
+                assert result.shape[0] != 600 and result.shape[0] > 3900, "불러오려는 파일은 train에 대해 topk가 저장된 npy입니다.\n저장된 npy 파일dms 현재 valid 에 대한 파일입니다."
+            
+            else:
+                # self.get_embedding()
+                with timer("transform"):
+                    tokenized_queries = [self.tokenize_fn(query) for query in queries]
+                with timer("query ex search"):
+                    result = np.array([self.bm25.get_scores(q) for q in tqdm(tokenized_queries, desc='SparseBM25, query에 대한 topk docs search')])
+                np.save(bm25_docs_path, result)
+                print("BM25 top docs saved!")
+            
+        else:               # dense embedding에서 호출하는 경우 외에는 변동적이어서, 저장하지 않고 진행한다.
+            # self.get_embedding()
             with timer("transform"):
                 tokenized_queries = [self.tokenize_fn(query) for query in queries]
             with timer("query ex search"):
                 result = np.array([self.bm25.get_scores(q) for q in tqdm(tokenized_queries, desc='SparseBM25 query ex search')])
             
-            if for_train:
-                np.save(bm25_docs_path, result)
-                print("BM25 top docs saved for training!")
-        
+            
+            np.save(bm25_docs_path, result)
+            print("BM25 top docs saved!")
+
         doc_scores = []
         doc_indices = []
         for i in tqdm(range(result.shape[0]), desc='SparseBM25 get relevant doc bulk...'):
@@ -363,9 +375,9 @@ class SparseBM25_edited(SparseBM25):
         alpha = 2
         with timer("query exhaustive search"):
             _, doc_indices = self.get_relevant_doc_bulk(
-                query_dataset["question"], k=max(40 + topk, alpha * topk) if self.CFG['option']['use_fuzz'] else topk+2, for_train='True',
+                query_dataset["question"], k=max(40 + topk, alpha * topk) if self.CFG['option']['use_fuzz'] else topk+2, for_train=True,
             )
-            
+        
         for idx, example in enumerate(
             tqdm(query_dataset, desc="Sparse retrieval except gold context: ")
         ):
@@ -497,23 +509,24 @@ class DenseRetrieval(BaseRetrieval):
             num_train_epochs=3,
             weight_decay=0.01,
             gradient_accumulation_steps=4,
-            fp16=True,
+            fp16=True,      # False 버전은 구현 중에 있음.
         )
         self.CFG = CFG
         self.training_args = training_args
         # self.model_name = CFG['model']['model_name']
         self.model_name = 'klue/bert-base'
-        self.data_dir = "/opt/ml/input/data/train_dataset/train"
-        self.dataset = load_from_disk(self.data_dir)
+        self.data_dir = "/opt/ml/input/data/train_dataset/"
+        self.dataset = load_from_disk(self.data_dir+"train")
+        self.valid_dataset = load_from_disk(self.data_dir+"validation")
         self.num_neg = num_neg
         
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.p_encoder = BertEncoder.from_pretrained(self.model_name).to(self.args.device)
         self.q_encoder = BertEncoder.from_pretrained(self.model_name).to(self.args.device)
         
-        valid_seqs = self.tokenizer(self.dataset['context'], padding="max_length", truncation=True, return_tensors='pt')
+        wiki_seqs = self.tokenizer(self.contexts, padding="max_length", truncation=True, return_tensors='pt')
         passage_dataset = TensorDataset(
-            valid_seqs['input_ids'], valid_seqs['attention_mask'], valid_seqs['token_type_ids']
+            wiki_seqs['input_ids'], wiki_seqs['attention_mask'], wiki_seqs['token_type_ids']
         )
         self.passage_dataloader = DataLoader(passage_dataset, batch_size=self.args.per_device_train_batch_size, drop_last=True)
         
@@ -710,14 +723,14 @@ class DenseRetrieval(BaseRetrieval):
                     
                     if self.args.fp16:
                         with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
-                            p_outputs = self.p_encoder(**p_inputs)          # (batch_size*(num_neg+1), emb_dim) -> (B*(N+1), S, H)
-                            q_outputs = self.q_encoder(**q_inputs)          # (batch_size*, emb_dim)            -> (B, S, H)
-                            bm25_outputs = self.p_encoder(**bm25_inputs)    # (batch_size*(self.bm25_topk), emb_dim)   -> (B*(N+1), S, H)
+                            p_outputs = self.p_encoder(**p_inputs)          # (batch_size*(num_neg+1), emb_dim) -> (B*(N+1), H). BERTmodel의 pooler_output임을 기억하자.
+                            q_outputs = self.q_encoder(**q_inputs)          # (batch_size*, emb_dim)            -> (B, H)
+                            bm25_outputs = self.p_encoder(**bm25_inputs)    # (batch_size*(self.bm25_topk), emb_dim)   -> (B*(N+1), H)
 
                             # Calculate similarity score & loss
-                            p_outputs = p_outputs.view(batch_size, self.num_neg + 1, -1)
-                            q_outputs = q_outputs.view(batch_size, 1, -1)
-                            bm25_outputs = bm25_outputs.view(batch_size, self.bm25_topk, -1)
+                            p_outputs = p_outputs.view(batch_size, self.num_neg + 1, -1)                   # (B, N+1, H)
+                            q_outputs = q_outputs.view(batch_size, 1, -1)                                  # (B, 1, H)
+                            bm25_outputs = bm25_outputs.view(batch_size, self.bm25_topk, -1)               # (B, N+1, H)
                             p_outputs = torch.cat([p_outputs, bm25_outputs], dim=1)                        # (batch_size, 1+RandNeg+bm25Neg, seq_len*emb_dim)
                             
                             sim_scores = torch.bmm(q_outputs, torch.transpose(p_outputs, 1, 2)).squeeze()  # (batch_size, 1+RandNeg+bm25Neg)
@@ -741,7 +754,7 @@ class DenseRetrieval(BaseRetrieval):
                         self.q_encoder.zero_grad()
                         torch.cuda.empty_cache()
                         
-                        wandb.log({"train/loss": loss_accumulate})
+                        wandb.log({"train/loss": loss_accumulate, "train/learning_rate": self.args.learning_rate})
                         loss_accumulate = 0.0
 
                     del p_inputs, q_inputs
@@ -751,11 +764,12 @@ class DenseRetrieval(BaseRetrieval):
     def get_relevant_doc_bulk(self, queries, k):
         """
         Note:
-        
+            전체 wiki 안에서 quries에 가장 relevant한 문서들의 유사도 점수와 idx를 topk 개 반환합니다.
         Args:
-        
+            queries:    유사한 문장을 확인하고 싶은 queries. List.
+            k:          topk 개
         Return:
-        
+            topk score(2d List), topk docs idx(2d List)
         """
         
         with torch.no_grad():
@@ -763,20 +777,24 @@ class DenseRetrieval(BaseRetrieval):
             self.q_encoder.eval()
             
             queries_tok = self.tokenizer(queries, padding="max_length", truncation=True, return_tensors='pt').to(self.args.device)
-            queries_emb = self.q_encoder(**queries_tok).to(self.args.device)
+            if self.args.fp16:
+                with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
+                    queries_emb = self.q_encoder(**queries_tok).to(self.args.device)
             
             passage_embs = []
             for batch in tqdm(self.passage_dataloader, desc='DenseRetrieval topk 문서 retrieve 중'):
                 batch = tuple(t.to(self.args.device) for t in batch)
                 
                 passage_inputs = {
-                    'input_ids': batch[0],
+                    'input_ids': batch[0],          # (B, max_len)
                     'attention_mask': batch[1],
                     'token_type_ids': batch[2]
                 }
-                passage_emb = self.p_encoder(**passage_inputs).to('cpu')
+                if self.args.fp16:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
+                        passage_emb = self.p_encoder(**passage_inputs).to('cpu')
                 passage_embs.append(passage_emb)    # [(batch, H), (batch, H), ...]
-            
+
             stacked = torch.stack(passage_embs, dim=0).view(len(self.passage_dataloader.dataset)//self.args.per_device_train_batch_size*self.args.per_device_train_batch_size, -1).to(self.args.device)  # (num_passage, emb_dim)
             dot_prod_scores = torch.matmul(queries_emb, torch.transpose(stacked, 0, 1))  # (num_queries, num_passage)
             
