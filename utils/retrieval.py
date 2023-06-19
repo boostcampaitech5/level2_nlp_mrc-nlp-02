@@ -255,6 +255,7 @@ class SparseTFIDF(BaseRetrieval):
             doc_indices.append(sorted_result.tolist()[:k])
         return doc_scores, doc_indices
 
+
 class SparseBM25(BaseRetrieval):
     def __init__(
         self,
@@ -290,7 +291,7 @@ class SparseBM25(BaseRetrieval):
             print("BM25 pickle saved.")
 
     def get_relevant_doc_bulk(
-        self, queries: List, k: Optional[int] = 1
+        self, queries: List, k: Optional[int] = 1, for_train='False',
     ) -> Tuple[List, List]:
 
         """
@@ -301,12 +302,26 @@ class SparseBM25(BaseRetrieval):
                 상위 몇 개의 Passage를 반환할지 정합니다.
         Note:
             p_embedding을 따로 저장하지 않기 때문에 TF-IDF보다 비교적 많은 시간이 소요됩니다.
+            for_train 인자를 넘기면 저장할 수 있도록 기능을 추가하였습니다.
         """
-
-        with timer("transform"):
-            tokenized_queries = [self.tokenize_fn(query) for query in queries]
-        with timer("query ex search"):
-            result = np.array([self.bm25.get_scores(q) for q in tqdm(tokenized_queries, desc='SparseBM25 query ex search')])
+        if for_train:
+            bm25_docs_name = "bm25_relevant_docs_for_training.npy"
+            bm25_docs_path = os.path.join(self.data_path, bm25_docs_name)
+            print("BM25 is now used for training.")
+            
+        if for_train and os.path.isfile(bm25_docs_path):
+            result = np.load(bm25_docs_path)
+            print("BM25 top docs loaded for training!")
+            
+        else: 
+            with timer("transform"):
+                tokenized_queries = [self.tokenize_fn(query) for query in queries]
+            with timer("query ex search"):
+                result = np.array([self.bm25.get_scores(q) for q in tqdm(tokenized_queries, desc='SparseBM25 query ex search')])
+            
+            if for_train:
+                np.save(bm25_docs_path, result)
+                print("BM25 top docs saved for training!")
         
         doc_scores = []
         doc_indices = []
@@ -348,7 +363,7 @@ class SparseBM25_edited(SparseBM25):
         alpha = 2
         with timer("query exhaustive search"):
             _, doc_indices = self.get_relevant_doc_bulk(
-                query_dataset["question"], k=max(40 + topk, alpha * topk) if self.CFG['option']['use_fuzz'] else topk+2
+                query_dataset["question"], k=max(40 + topk, alpha * topk) if self.CFG['option']['use_fuzz'] else topk+2, for_train='True',
             )
             
         for idx, example in enumerate(
@@ -481,6 +496,7 @@ class DenseRetrieval(BaseRetrieval):
             per_device_eval_batch_size=1,
             num_train_epochs=1,
             weight_decay=0.01,
+            gradient_accumulation_steps=128,
         )
         self.CFG = CFG
         self.training_args = training_args
@@ -586,8 +602,8 @@ class DenseRetrieval(BaseRetrieval):
             만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
         """
         
-        p_pickle_name = "p_dense_embedding_randneg_bm25neg_" + f"B{self.num_neg*2+1}.pth"
-        q_pickle_name = "q_dense_embedding_randneg_bm25neg_"+ f"B{self.num_neg*2+1}.pth"
+        p_pickle_name = "p_dense_embedding_randneg_bm25neg_" + f"B{(self.num_neg*2+1)*self.args.gradient_accumulation_steps}.pth"
+        q_pickle_name = "q_dense_embedding_randneg_bm25neg_"+ f"B{(self.num_neg*2+1)*self.args.gradient_accumulation_steps}.pth"
         p_emb_path = os.path.join(self.data_path, p_pickle_name)
         q_emb_path = os.path.join(self.data_path, q_pickle_name)
         
@@ -618,9 +634,9 @@ class DenseRetrieval(BaseRetrieval):
             print("Embedding model saved.")
 
     def train(self, args=None, CFG=None):
-        folder_name, save_path = utils.get_folder_name(CFG)
-        wandb.init(name=folder_name+'_dense_embedding', project=CFG['wandb']['project'], 
-            entity=CFG['wandb']['id'], dir=save_path)
+        _name = CFG['실험명']
+        wandb.init(name=_name+'_dense_embedding', project=CFG['wandb']['project'], 
+            entity=CFG['wandb']['id'])
         
         if args is None:
             args = self.args
@@ -652,7 +668,8 @@ class DenseRetrieval(BaseRetrieval):
 
             with tqdm(self.train_dataloader, unit="batch") as tepoch:
                 for batch in tepoch:
-
+                    global_step += 1
+                    
                     self.p_encoder.train()
                     self.q_encoder.train()
             
@@ -686,21 +703,21 @@ class DenseRetrieval(BaseRetrieval):
                     loss = F.nll_loss(sim_scores, targets)
                     tepoch.set_postfix(loss=f'{str(loss.item())}')
 
+                    # gradient accumulation을 수행하도록 loss만 축적합니다.
+                    loss = loss / args.gradient_accumulation_steps
                     loss.backward()
-                    optimizer.step()
-                    scheduler.step()
-
-                    self.p_encoder.zero_grad()
-                    self.q_encoder.zero_grad()
-
-                    global_step += 1
                     loss_accumulate += loss.item()
                     
-                    if global_step % 20 == 0:
-                        wandb.log({"train/loss": loss_accumulate/20})
+                    if global_step % args.gradient_accumulation_steps == 0:
+                        optimizer.step()
+                        scheduler.step()
+
+                        self.p_encoder.zero_grad()
+                        self.q_encoder.zero_grad()
+                        torch.cuda.empty_cache()
+                        
+                        wandb.log({"train/loss": loss_accumulate})
                         loss_accumulate = 0.0
-                    
-                    torch.cuda.empty_cache()
 
                     del p_inputs, q_inputs
         
