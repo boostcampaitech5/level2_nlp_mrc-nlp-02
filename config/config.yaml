@@ -32,6 +32,7 @@ option:
   use_faiss: False
   batch_size: 16
   use_fuzz: False
+  check_retrieved_score: True
 wandb:
   id: gibum1228
   project: MRC
