@@ -63,8 +63,6 @@ def main():
     else:
         datasets = load_from_disk(data_path)
         train_dataset = pd.DataFrame(datasets["train"])
-        validation_dataset = pd.DataFrame(datasets["validation"])
-        train_dataset = pd.concat([train_dataset, validation_dataset])
         train_dataset = train_dataset.reset_index(drop=True)
 
     if BM25_USED:
@@ -121,8 +119,8 @@ def main():
     # 토크나이저
     train_context, train_query = tokenize_colbert(train_dataset, tokenizer, corpus="both")
     if BM25_USED:
-        train_bm25_1 = tokenize_colbert(bm25rank_contexts1, tokenizer, corpus="bm25_hard")
-        train_bm25_2 = tokenize_colbert(bm25rank_contexts2, tokenizer, corpus="bm25_hard")
+        train_bm25_1 = tokenize_colbert(bm25rank_contexts1[:len(train_dataset)], tokenizer, corpus="bm25_hard")
+        train_bm25_2 = tokenize_colbert(bm25rank_contexts2[:len(train_dataset)], tokenizer, corpus="bm25_hard")
 
         train_dataset = TensorDataset(
             train_context["input_ids"],
