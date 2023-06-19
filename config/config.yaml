@@ -5,6 +5,7 @@ retrieval_list:
   SparseTFIDF: SparseTFIDF
   BM25: SparseBM25
   ColBERT: DenseColBERT
+  DenseRetrieval: DenseRetrieval
 colbert_model_name:
 model:
   model_name: klue/roberta-large
