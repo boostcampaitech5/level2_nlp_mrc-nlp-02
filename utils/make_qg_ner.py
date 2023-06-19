@@ -29,7 +29,7 @@ print('making Dataframe...')
 df_wiki_ner = df.copy()
 # df_wiki_ner = df_wiki_ner.head(800).copy()
 
-ner_list = ['PERSON', 'EVENT', 'ORGANIZATION',  'DATE', 'TIME', 'LOCATION']
+ner_list = ['PERSON', 'EVENT', 'ORGANIZATION',  'DATE', 'TIME', 'LOCATION']  # 현재 선택된 엔티티
 # ner_list = ['PERSON','EVENT']
 print(f"entitiy list...{ner_list}")
 
