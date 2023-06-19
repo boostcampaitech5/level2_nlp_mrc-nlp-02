@@ -28,18 +28,20 @@ class CNN_BLOCK(nn.Module):
 
 class AutoModelForQuestionAnsweringAndCNN(nn.Module):
     def __init__(self, CFG, config):
-        self.PLM = AutoModel.from_pretrained(CFG['m'])
+        super(AutoModelForQuestionAnsweringAndCNN, self).__init__()
+        self.config = config
+        self.CFG = CFG
         T = CFG['tokenizer']['max_seq_length']
         H = config.hidden_size
-        self.cnn = [CNN_BLOCK(T, H) for _ in range(5)]
+
+        self.PLM = AutoModel.from_pretrained(CFG['model']['model_name'])
+        self.cnn_block_1 = CNN_BLOCK(T, H)
+        self.cnn_block_2 = CNN_BLOCK(T, H)
+        self.cnn_block_3 = CNN_BLOCK(T, H)
+        self.cnn_block_4 = CNN_BLOCK(T, H)
+        self.cnn_block_5 = CNN_BLOCK(T, H)
         self.qa_outputs = nn.Linear(H, 2)
-
-
-class AutoModelForQuestionAnsweringAndCNN(AutoModelForQuestionAnswering):
-    def __init__(self, config):
-        super().__init__(config)
-        self.init_weights()
-
+    
     def forward(
         self,
         input_ids=None,
@@ -52,12 +54,11 @@ class AutoModelForQuestionAnsweringAndCNN(AutoModelForQuestionAnswering):
         end_positions=None,
         output_attentions=None,
         output_hidden_states=None,
-        return_dict=None,
-        cnn=None
+        return_dict=None
     ):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        outputs = self.roberta(
+        outputs = self.PLM(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
@@ -73,11 +74,11 @@ class AutoModelForQuestionAnsweringAndCNN(AutoModelForQuestionAnswering):
         sequence_output = outputs[0]
         
         ### CNN 연산 ###
-        sequence_output = cnn[0](sequence_output)
-        sequence_output = cnn[1](sequence_output)
-        sequence_output = cnn[2](sequence_output)
-        sequence_output = cnn[3](sequence_output)
-        sequence_output = cnn[4](sequence_output)
+        sequence_output = self.cnn_block_1(sequence_output)
+        sequence_output = self.cnn_block_2(sequence_output)
+        sequence_output = self.cnn_block_3(sequence_output)
+        sequence_output = self.cnn_block_4(sequence_output)
+        sequence_output = self.cnn_block_5(sequence_output)
 
         logits = self.qa_outputs(sequence_output)
         start_logits, end_logits = logits.split(1, dim=-1)
