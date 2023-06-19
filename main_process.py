@@ -216,7 +216,7 @@ if __name__ == "__main__":
         printer.done()
     else:
         # Trainer 초기화
-        data_collator = DataCollatorWithPadding(
+        data_collator = utils.NewDataCollator(
             tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
         )
         printer.start("Trainer 초기화")

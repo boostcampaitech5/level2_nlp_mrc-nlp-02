@@ -20,6 +20,7 @@ def train_tokenizing(examples, tokenizer, pad_on_right, CFG, column_names):
         padding="max_length" if CFG['tokenizer']['pad_to_max_length'] else False,
     )
     if CFG['model']['option'] == 'question_masking':
+        tokenized_examples["masked_lm_labels"] = []
         for idx in range(len(tokenized_examples["input_ids"])):
             # Create a probability matrix with the same length as the current input_ids
             probability_matrix = torch.full((len(tokenized_examples["input_ids"][idx]), ), 0.15)
