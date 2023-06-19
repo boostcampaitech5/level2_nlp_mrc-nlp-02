@@ -101,7 +101,7 @@ if __name__ == "__main__":
         config.hidden_dropout_prob = CFG['model']['hidden_dropout_prob']
     tokenizer = AutoTokenizer.from_pretrained(CFG['model']['model_name'], use_fast=True) # rust tokenizer if use_fast == True else python tokenizer
     model_class = eval(CFG['model']['select_option'][CFG['model']['option']])
-    model = model_class(CFG=CFG, config=config) if CFG['model']['option'] == 'cnn' else model_class.from_pretrained(CFG['model']['model_path'], config=config)
+    model = model_class(CFG=CFG, config=config) if (CFG['model']['option'] == 'cnn') or (CFG['model']['option'] == 'question_masking') else model_class.from_pretrained(CFG['model']['model_path'], config=config)
     printer.done()
 
     # 토큰화를 위한 파라미터 설정
