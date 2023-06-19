@@ -101,7 +101,7 @@ if __name__ == "__main__":
         config.hidden_dropout_prob = CFG['model']['hidden_dropout_prob']
     tokenizer = AutoTokenizer.from_pretrained(CFG['model']['model_name'], use_fast=True) # rust tokenizer if use_fast == True else python tokenizer
     model_class = eval(CFG['model']['select_option'][CFG['model']['option']])
-    model = model_class.from_pretrained(CFG['model']['model_path'], config=config)
+    model = model_class(CFG=CFG, config=config) if CFG['model']['option'] == 'cnn' else model_class.from_pretrained(CFG['model']['model_path'], config=config)
     printer.done()
 
     # 토큰화를 위한 파라미터 설정
@@ -294,23 +294,10 @@ if __name__ == "__main__":
         fn_kwargs=fn_kwargs
     )
     printer.done()
-    # printer.start("test를 위한 trainer 초기화")
-    # # Trainer 초기화
-    # trainer = QuestionAnsweringTrainer(
-    #     model=model,
-    #     args=training_args,
-    #     train_dataset=None,
-    #     eval_dataset=test_data,
-    #     eval_examples=test_dataset["validation"],
-    #     tokenizer=tokenizer,
-    #     data_collator=data_collator,
-    #     post_process_function=post_processing_function,
-    #     compute_metrics=utils.compute_metrics,
-    # )
-    # printer.done()
     printer.start("predict 수행중...")
     predictions = trainer.predict(
         test_dataset=test_data,
         test_examples=test_dataset['validation']
     )
     printer.done()
+    print("main_process 끝 ^_^")

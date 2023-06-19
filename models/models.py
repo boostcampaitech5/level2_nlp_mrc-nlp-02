@@ -4,41 +4,44 @@ import numpy as np
 import torch.nn.functional as F
 
 from torch.nn import CrossEntropyLoss
-from transformers import AutoModelForQuestionAnswering
+from transformers import AutoModelForQuestionAnswering, AutoModel
 from transformers.modeling_outputs import QuestionAnsweringModelOutput
 
 
 class CNN_BLOCK(nn.Module):
-    def __init__(self, CFG):
+    def __init__(self, T, H):
         super(CNN_BLOCK, self).__init__()
-        T = CFG['tokenizer']['max_seq_length']
-        H = 768
-
+        
         self.conv1 = nn.Conv1d(T, T * 2, 3, stride=1, padding='same')
         self.conv2 = nn.Conv1d(T * 2, T, 1, stride=1, padding='same')
-        self.layernorm = nn.LayerNorm(H)
+        self.relu = nn.ReLU()
+        self.layer_norm = nn.LayerNorm(H)
 
     def forward(self, x):
-        _x = x
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = F.relu(x) + _x
-        x = self.layernorm(x)
+        output = self.conv1(x)
+        output = self.conv2(output)
+        output = self.relu(output) + x
+        output = self.layer_norm(output)
 
         return x
 
 
-class AutoModelForQuestionAnsweringAndCNN(AutoModelForQuestionAnswering):
-    def __init__(self, config, CFG):
-        super().__init__(config)
-        self.init_weights()
+class AutoModelForQuestionAnsweringAndCNN(nn.Module):
+    def __init__(self, CFG, config):
+        super(AutoModelForQuestionAnsweringAndCNN, self).__init__()
+        self.config = config
+        self.CFG = CFG
+        T = CFG['tokenizer']['max_seq_length']
+        H = config.hidden_size
 
-        self.cnn_block_1 = CNN_BLOCK(CFG)
-        self.cnn_block_2 = CNN_BLOCK(CFG)
-        self.cnn_block_3 = CNN_BLOCK(CFG)
-        self.cnn_block_4 = CNN_BLOCK(CFG)
-        self.cnn_block_5 = CNN_BLOCK(CFG)
-
+        self.PLM = AutoModel.from_pretrained(CFG['model']['model_name'])
+        self.cnn_block_1 = CNN_BLOCK(T, H)
+        self.cnn_block_2 = CNN_BLOCK(T, H)
+        self.cnn_block_3 = CNN_BLOCK(T, H)
+        self.cnn_block_4 = CNN_BLOCK(T, H)
+        self.cnn_block_5 = CNN_BLOCK(T, H)
+        self.qa_outputs = nn.Linear(H, 2)
+    
     def forward(
         self,
         input_ids=None,
@@ -49,14 +52,13 @@ class AutoModelForQuestionAnsweringAndCNN(AutoModelForQuestionAnswering):
         inputs_embeds=None,
         start_positions=None,
         end_positions=None,
-        masked_lm_labels=None,
         output_attentions=None,
         output_hidden_states=None,
-        return_dict=None,
+        return_dict=None
     ):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        outputs = self.roberta(
+        outputs = self.PLM(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
