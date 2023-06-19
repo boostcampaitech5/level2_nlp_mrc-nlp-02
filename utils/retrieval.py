@@ -19,8 +19,8 @@ from tqdm.auto import tqdm
 from fuzzywuzzy import fuzz
 from rank_bm25 import BM25Okapi
 from fuzzywuzzy import fuzz
-from ..colbert.model import *
-from ..colbert.tokenizer import *
+from colbert.model import *
+from colbert.tokenizer import *
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.feature_extraction.text import TfidfVectorizer
 from datasets import Dataset, concatenate_datasets, load_from_disk
@@ -457,8 +457,7 @@ class DenseColBERT(BaseRetrieval):
             print(rank)
             print(rank.size())
             
-        
-        return dot_prod_scores[:,:k].tolist(), rank
+        return dot_prod_scores[:,:k].tolist(), rank[:,:k].tolist()
 
       
 class DenseRetrieval(BaseRetrieval):
@@ -477,8 +476,8 @@ class DenseRetrieval(BaseRetrieval):
             output_dir="dense_retrieval",
             evaluation_strategy="epoch",
             learning_rate=3e-4,
-            per_device_train_batch_size=2,
-            per_device_eval_batch_size=2,
+            per_device_train_batch_size=1,
+            per_device_eval_batch_size=1,
             num_train_epochs=1,
             weight_decay=0.01,
         )
@@ -586,8 +585,8 @@ class DenseRetrieval(BaseRetrieval):
             만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
         """
         
-        p_pickle_name = "p_dense_embedding_randneg_bm25neg_" + f"B{self.num_neg*2+1}.bin"
-        q_pickle_name = "q_dense_embedding_randneg_bm25neg_"+ f"B{self.num_neg*2+1}.bin"
+        p_pickle_name = "p_dense_embedding_randneg_bm25neg_" + f"B{self.num_neg*2+1}.pth"
+        q_pickle_name = "q_dense_embedding_randneg_bm25neg_"+ f"B{self.num_neg*2+1}.pth"
         p_emb_path = os.path.join(self.data_path, p_pickle_name)
         q_emb_path = os.path.join(self.data_path, q_pickle_name)
         
@@ -803,4 +802,4 @@ class BertEncoder(BertPreTrainedModel):
         )
         
         pooled_output = outputs[1]
-        return pooled_output[:,:k].tolist()
+        return pooled_output
