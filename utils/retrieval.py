@@ -22,7 +22,7 @@ from colbert.model import *
 from colbert.tokenizer import *
 from contextlib import contextmanager
 from typing import List, Optional, Tuple, Union
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, RandomSampler
 from sklearn.feature_extraction.text import TfidfVectorizer
 from datasets import Dataset, concatenate_datasets, load_from_disk
 from itertools import zip_longest
@@ -482,7 +482,7 @@ class DenseRetrieval(BaseRetrieval):
         CFG,
         training_args,
         tokenize_fn,
-        num_neg: Optional[int] = 15,
+        num_neg: Optional[int] = 2,
         data_path: Optional[str] = "/opt/ml/retrieval",
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> None:
@@ -492,11 +492,11 @@ class DenseRetrieval(BaseRetrieval):
             output_dir="dense_retrieval",
             evaluation_strategy="epoch",
             learning_rate=3e-4,
-            per_device_train_batch_size=1,
-            per_device_eval_batch_size=1,
-            num_train_epochs=1,
+            per_device_train_batch_size=5,
+            per_device_eval_batch_size=5,
+            num_train_epochs=3,
             weight_decay=0.01,
-            gradient_accumulation_steps=128,
+            gradient_accumulation_steps=4,
         )
         self.CFG = CFG
         self.training_args = training_args
@@ -552,8 +552,9 @@ class DenseRetrieval(BaseRetrieval):
                     passage_candidatates.extend(p_neg)
                     break   
             p_with_neg.append(passage_candidatates)             # (whole corpus, (1+num_neg))
-                                                                  
-            
+        
+        self.bm25_topk = num_neg+1
+        bm25_neg = []
         if add_bm25:
             # 1. gold context: (전체)
             # gold_context = [context for context in dataset['context']]
@@ -562,34 +563,42 @@ class DenseRetrieval(BaseRetrieval):
             # 2. retrieve not gold but high bm25 score docs
             bm_25_neg = SparseBM25_edited(self.CFG, self.training_args, tokenize_fn=tokenizer.tokenize)
             bm_25_neg.get_embedding()
-            not_gold_context = bm_25_neg.retrieve_except_gold(dataset, topk=num_neg)    # list (전체, num_neg)
+            not_gold_context = bm_25_neg.retrieve_except_gold(dataset, topk=self.bm25_topk)    # list (전체, topk)        # bm25개수가 num_neg+1과 다를 때...
         
             # 3. extend
             for idx, rows in enumerate(not_gold_context):
-                p_with_neg[idx].extend(not_gold_context[idx])   # (whole corpus, (1+num_neg+bm25_topk))
+                # p_with_neg[idx].extend(not_gold_context[idx])   # (whole corpus, (1+num_neg+bm25_topk))
+                bm25_neg.append(not_gold_context[idx])            # (whole corpus, (1+num_neg+bm25_topk))
                 
             # 4. bm25를 추가하면 self.num_neg가 두 배가 된다.
-            self.num_neg = self.num_neg + num_neg
-            num_neg = self.num_neg
+            # self.num_neg = self.num_neg + num_neg
+            # num_neg = self.num_neg
         
         # 2차원 -> 1차원으로 변경(for tokenize)
         p_with_neg = list(itertools.chain(*p_with_neg))
+        bm25_neg = list(itertools.chain(*bm25_neg))
         
         # (Question, Passage) 데이터셋
         q_seqs = tokenizer(dataset['question'], padding="max_length", truncation=True, return_tensors='pt')
         p_seqs = tokenizer(p_with_neg, padding="max_length", truncation=True, return_tensors='pt')
+        bm25_seqs = tokenizer(bm25_neg, padding="max_length", truncation=True, return_tensors='pt')
         
         max_len = p_seqs['input_ids'].size(-1)
-        
+
         # p_seqs org size (C*(num_neg+1), tokenizer_max_length) -> (C, (num_neg+1), tokenizer_max_length)
         # q_seqs size (C, tokenizer_max_length=512)
         p_seqs['input_ids'] = p_seqs['input_ids'].view(-1, num_neg+1, max_len)
         p_seqs['attention_mask'] = p_seqs['attention_mask'].view(-1, num_neg+1, max_len)
         p_seqs['token_type_ids'] = p_seqs['token_type_ids'].view(-1, num_neg+1, max_len)
 
+        bm25_seqs['input_ids'] = bm25_seqs['input_ids'].view(-1, self.bm25_topk, max_len)
+        bm25_seqs['attention_mask'] = bm25_seqs['attention_mask'].view(-1, self.bm25_topk, max_len)
+        bm25_seqs['token_type_ids'] = bm25_seqs['token_type_ids'].view(-1, self.bm25_topk, max_len)
+
         train_dataset = TensorDataset(
             p_seqs['input_ids'], p_seqs['attention_mask'], p_seqs['token_type_ids'], 
-            q_seqs['input_ids'], q_seqs['attention_mask'], q_seqs['token_type_ids']
+            q_seqs['input_ids'], q_seqs['attention_mask'], q_seqs['token_type_ids'],
+            bm25_seqs['input_ids'], bm25_seqs['attention_mask'], bm25_seqs['token_type_ids'],
         )
 
         self.train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=self.args.per_device_train_batch_size, drop_last=True)
@@ -602,8 +611,8 @@ class DenseRetrieval(BaseRetrieval):
             만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
         """
         
-        p_pickle_name = "p_dense_embedding_randneg_bm25neg_" + f"B{(self.num_neg*2+1)*self.args.gradient_accumulation_steps}.pth"
-        q_pickle_name = "q_dense_embedding_randneg_bm25neg_"+ f"B{(self.num_neg*2+1)*self.args.gradient_accumulation_steps}.pth"
+        p_pickle_name = "p_dense_embedding_randneg_bm25neg_" + f"B{(self.num_neg+1)*self.args.gradient_accumulation_steps}.pth"
+        q_pickle_name = "q_dense_embedding_randneg_bm25neg_"+ f"B{(self.num_neg+1)*self.args.gradient_accumulation_steps}.pth"
         p_emb_path = os.path.join(self.data_path, p_pickle_name)
         q_emb_path = os.path.join(self.data_path, q_pickle_name)
         
@@ -688,18 +697,27 @@ class DenseRetrieval(BaseRetrieval):
                         'attention_mask': batch[4].to(args.device),
                         'token_type_ids': batch[5].to(args.device)
                     }
-            
-                    p_outputs = self.p_encoder(**p_inputs)  # (batch_size*(num_neg+1), emb_dim)
-                    q_outputs = self.q_encoder(**q_inputs)  # (batch_size*, emb_dim)
+                    # (B*(num_neg), max_len=512)
+                    bm25_inputs = {
+                        'input_ids': batch[6].view(batch_size * self.bm25_topk, -1).to(args.device),
+                        'attention_mask': batch[7].view(batch_size * self.bm25_topk, -1).to(args.device),
+                        'token_type_ids': batch[8].view(batch_size * self.bm25_topk, -1).to(args.device)
+                    }
+                    
+                    p_outputs = self.p_encoder(**p_inputs)          # (batch_size*(num_neg+1), emb_dim) -> (B*(N+1), S, H)
+                    q_outputs = self.q_encoder(**q_inputs)          # (batch_size*, emb_dim)            -> (B, S, H)
+                    bm25_outputs = self.p_encoder(**bm25_inputs)    # (batch_size*(self.bm25_topk), emb_dim)   -> (B*(N+1), S, H)
 
                     # Calculate similarity score & loss
                     p_outputs = p_outputs.view(batch_size, self.num_neg + 1, -1)
                     q_outputs = q_outputs.view(batch_size, 1, -1)
-
-                    sim_scores = torch.bmm(q_outputs, torch.transpose(p_outputs, 1, 2)).squeeze()  #(batch_size, num_neg + 1)
+                    bm25_outputs = bm25_outputs.view(batch_size, self.bm25_topk, -1)
+                    p_outputs = torch.cat([p_outputs, bm25_outputs], dim=1)                        # (batch_size, 1+RandNeg+bm25Neg, seq_len*emb_dim)
+                    
+                    sim_scores = torch.bmm(q_outputs, torch.transpose(p_outputs, 1, 2)).squeeze()  # (batch_size, 1+RandNeg+bm25Neg)
                     sim_scores = sim_scores.view(batch_size, -1)
                     sim_scores = F.log_softmax(sim_scores, dim=1)
-
+                    
                     loss = F.nll_loss(sim_scores, targets)
                     tepoch.set_postfix(loss=f'{str(loss.item())}')
 
