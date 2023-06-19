@@ -10,10 +10,11 @@ import wandb
 import pickle
 import itertools
 import Levenshtein
-import retriever_metric
 import numpy as np
 import pandas as pd
+import torch.nn.functional as F
 
+from utils import utils
 from tqdm.auto import tqdm
 from fuzzywuzzy import fuzz
 from rank_bm25 import BM25Okapi
@@ -23,8 +24,8 @@ from typing import List, Optional, Tuple, Union
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.feature_extraction.text import TfidfVectorizer
 from datasets import Dataset, concatenate_datasets, load_from_disk
-from ..colbert.model import *
-from ..colbert.tokenizer import *
+# from ..colbert.model import *
+# from ..colbert.tokenizer import *
 from itertools import zip_longest
 from transformers import (
     AutoConfig,
@@ -325,11 +326,12 @@ class SparseBM25_edited(SparseBM25):
     def __init__(
         self,
         CFG,
+        training_args,
         tokenize_fn,
         data_path: Optional[str] = "retrieval/",
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> None:
-        super().__init__(CFG, tokenize_fn, data_path, context_path)
+        super().__init__(CFG, training_args, tokenize_fn, data_path, context_path)
         
     def retrieve_except_gold(
        self, query_dataset: Dataset, topk: Optional[int] = 1
@@ -465,22 +467,25 @@ class DenseRetrieval(BaseRetrieval):
     def __init__(
         self,
         CFG,
+        training_args,
         tokenize_fn,
         num_neg: Optional[int] = 15,
         data_path: Optional[str] = "/opt/ml/retrieval",
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> None:
-        super().__init__(CFG, tokenize_fn, data_path, context_path)
+        super().__init__(CFG, training_args, tokenize_fn, data_path, context_path)
         
         self.args = TrainingArguments(
             output_dir="dense_retrieval",
             evaluation_strategy="epoch",
             learning_rate=3e-4,
-            per_device_train_batch_size=1,
-            per_device_eval_batch_size=1,
+            per_device_train_batch_size=2,
+            per_device_eval_batch_size=2,
             num_train_epochs=1,
             weight_decay=0.01,
         )
+        self.CFG = CFG
+        self.training_args = training_args
         # self.model_name = CFG['model']['model_name']
         self.model_name = 'klue/bert-base'
         self.data_dir = "/opt/ml/input/data/train_dataset/train"
@@ -488,11 +493,15 @@ class DenseRetrieval(BaseRetrieval):
         self.num_neg = num_neg
         
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.p_encoder = BertEncoder.from_pretrained(self.model_name).to(dense_args.device)
-        self.q_encoder = BertEncoder.from_pretrained(self.model_name).to(dense_args.device)
+        self.p_encoder = BertEncoder.from_pretrained(self.model_name).to(self.args.device)
+        self.q_encoder = BertEncoder.from_pretrained(self.model_name).to(self.args.device)
         
-        self.prepare_in_batch_negative(self.dataset, self.num_neg, self.tokenizer, add_bm25=True)
-
+        valid_seqs = self.tokenizer(self.dataset['context'], padding="max_length", truncation=True, return_tensors='pt')
+        passage_dataset = TensorDataset(
+            valid_seqs['input_ids'], valid_seqs['attention_mask'], valid_seqs['token_type_ids']
+        )
+        self.passage_dataloader = DataLoader(passage_dataset, batch_size=self.args.per_device_train_batch_size, drop_last=True)
+        
     def prepare_in_batch_negative(self, dataset=None, num_neg=2, tokenizer=None, add_bm25=False):
         """
         Note:
@@ -537,7 +546,7 @@ class DenseRetrieval(BaseRetrieval):
             # valid_dataset = load_from_disk("/opt/ml/input/data/train_dataset/")['validation']
             
             # 2. retrieve not gold but high bm25 score docs
-            bm_25_neg = SparseBM25_edited(CFG, tokenize_fn=tokenizer.tokenize, data_path="/opt/ml/input/data")
+            bm_25_neg = SparseBM25_edited(self.CFG, self.training_args, tokenize_fn=tokenizer.tokenize)
             bm_25_neg.get_embedding()
             not_gold_context = bm_25_neg.retrieve_except_gold(dataset, topk=num_neg)    # list (전체, num_neg)
         
@@ -571,12 +580,6 @@ class DenseRetrieval(BaseRetrieval):
 
         self.train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=self.args.per_device_train_batch_size, drop_last=True)
 
-        valid_seqs = tokenizer(dataset['context'], padding="max_length", truncation=True, return_tensors='pt')
-        passage_dataset = TensorDataset(
-            valid_seqs['input_ids'], valid_seqs['attention_mask'], valid_seqs['token_type_ids']
-        )
-        self.passage_dataloader = DataLoader(passage_dataset, batch_size=self.args.per_device_train_batch_size, drop_last=True)
-
     def get_embedding(self) -> None:
         """
         Summary:
@@ -585,27 +588,36 @@ class DenseRetrieval(BaseRetrieval):
             만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
         """
         
-        p_pickle_name = "p_dense_embedding_randneg_bm25neg_" + f"B{self.num_neg+1}.bin"
-        q_pickle_name = "q_dense_embedding_randneg_bm25neg_"+ f"B{self.num_neg+1}.bin"
+        p_pickle_name = "p_dense_embedding_randneg_bm25neg_" + f"B{self.num_neg*2+1}.bin"
+        q_pickle_name = "q_dense_embedding_randneg_bm25neg_"+ f"B{self.num_neg*2+1}.bin"
         p_emb_path = os.path.join(self.data_path, p_pickle_name)
         q_emb_path = os.path.join(self.data_path, q_pickle_name)
-
+        
         if os.path.isfile(p_emb_path) and os.path.isfile(q_emb_path):
-            with open(p_emb_path, "rb") as file:
-                self.p_encoder = pickle.load(file)
-            with open(q_emb_path, "rb") as file:
-                self.q_encoder = pickle.load(file)
-            print("Embedding pickle load.")
+            self.p_encoder.load_state_dict(torch.load(p_emb_path))
+            self.q_encoder.load_state_dict(torch.load(q_emb_path))
+            
+            # with open(p_emb_path, "rb") as file:
+            #     self.p_encoder = pickle.load(file)
+            # with open(q_emb_path, "rb") as file:
+            #     self.q_encoder = pickle.load(file)
+            print("Embedding model load.")
         
         else:
+            print("\nEmbeddings are not detected!! Prepare Negatives in batch...")
+            print(f"Training with this data:\n{self.dataset}\n")
+            self.prepare_in_batch_negative(self.dataset, self.num_neg, self.tokenizer, add_bm25=True)
             print("Build dense embedding...")
             self.train(CFG=self.CFG)
             
-            with open(p_emb_path, "wb") as file:
-                pickle.dump(self.p_encoder, file)
-            with open(q_emb_path, "wb") as file:
-                pickle.dump(self.q_encoder, file)
-            print("Embedding pickle saved.")
+            torch.save(self.p_encoder.state_dict(), p_emb_path)
+            torch.save(self.q_encoder.state_dict(), q_emb_path)
+            
+            # with open(p_emb_path, "wb") as file:
+            #     pickle.dump(self.p_encoder, file)
+            # with open(q_emb_path, "wb") as file:
+            #     pickle.dump(self.q_encoder, file)
+            print("Embedding model saved.")
 
     def train(self, args=None, CFG=None):
         folder_name, save_path = utils.get_folder_name(CFG)
