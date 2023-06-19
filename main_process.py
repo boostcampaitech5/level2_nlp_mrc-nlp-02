@@ -23,7 +23,7 @@ from transformers import (
 from tqdm.auto import tqdm
 
 ### 우리가 만든 라이브러리 ###
-from utils import utils, data_controller, retrieval
+from utils import utils, data_controller, retriever_metric, retrieval
 from input.code.trainer_qa import QuestionAnsweringTrainer
 from input.code.utils_qa import postprocess_qa_predictions
 from models.models import *
@@ -237,6 +237,7 @@ if __name__ == "__main__":
     test_dataset = load_from_disk('input/data/test_dataset')
     
     # retrieval 단계
+    print(f"Retriever class: retrieval.{CFG['retrieval_list'][CFG['retrieval_name']]}")
     retrieval_class = eval(f"retrieval.{CFG['retrieval_list'][CFG['retrieval_name']]}")
     retriever = retrieval_class(CFG=CFG, training_args = training_args, tokenize_fn=tokenizer.tokenize)
     retriever.get_embedding()
@@ -245,6 +246,30 @@ if __name__ == "__main__":
     df = retriever.retrieve(test_dataset['validation'], topk=CFG['option']['top_k_retrieval'])
     printer.done()
 
+    # retriever 성능 비교하기 - 현재 valid 데이터에 대해서만 평가. train에 대해서 진행하고 싶다면 주석을 풀어주세요.
+    # TF-IDF기준 train 약 40-50초, valid 약 5초
+    if CFG['option']['check_retrieved_score']:
+        printer.start("Retrieved docs 성능평가")
+        
+        # train 데이터로 retrieve한 문서 점수 평가
+        # df_for_train = retriever.retrieve(train_dataset['train'], topk=CFG['option']['top_k_retrieval'])
+        # metric_train = retriever_metric.score_retrieved_docs(dataset=train_dataset['train'], topk_docs=df_for_train, mean='context', metric='ALL')
+        # train_mrr, train_ndcg = metric_train.test()
+        
+        # valid 데이터로 retrieve한 문서 점수 평가
+        df_for_valid = retriever.retrieve(train_dataset['validation'], topk=CFG['option']['top_k_retrieval'])
+        metric_valid = retriever_metric.score_retrieved_docs(dataset=train_dataset['validation'], topk_docs=df_for_valid, mean='context', metric='ALL')
+        valid_mrr, valid_ndcg = metric_valid.test()
+        
+        # 점수 기록
+        score_save_path = save_path + '/train/'
+        with open(score_save_path + "valid_retrieve_score.txt", "w") as file:
+            file.write(f"Valid 데이터에 대한 MRR@topk, NDCG@topk 점수를 기록합니다.\n\n")
+            file.write(f"MRR@{CFG['option']['top_k_retrieval']} score : " + str(valid_mrr) + "\n")
+            file.write(f"NDCG@{CFG['option']['top_k_retrieval']} value: " + str(valid_ndcg) + "\n")
+            
+        printer.done()
+        
     printer.start("context가 추가된 test dataset 선언")
     f = Features(
             {

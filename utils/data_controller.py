@@ -42,9 +42,9 @@ def train_tokenizing(examples, tokenizer, pad_on_right, CFG, column_names):
             labels = np.where(~masked_indices, -100, tokenized_examples["input_ids"][idx])
             tokenized_examples["input_ids"][idx] = masked_input_ids.tolist()
             if idx == 0:
-                tokenized_examples["labels"] = [labels.tolist()]
+                tokenized_examples["masked_lm_labels"] = [labels.tolist()]
             else:
-                tokenized_examples["labels"].append(labels.tolist())
+                tokenized_examples["masked_lm_labels"].append(labels.tolist())
 
     # 길이가 긴 context가 등장할 경우 truncate를 진행해야하므로, 해당 데이터셋을 찾을 수 있도록 mapping 가능한 값이 필요합니다.
     sample_mapping = tokenized_examples.pop("overflow_to_sample_mapping")
