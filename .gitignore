@@ -12,11 +12,12 @@ force_inference.ipynb
 force_inference.py
 add_noun_adj.ipynb
 back-question.ipynb
-retrieval/*.bin
+retrieval/*
 !colbert/*.py
 colbert
 col_eval.sh
 nltk_data/*
+wandb/*
 
 ### Git ###
 # Created by git for backups. To disable backups in Git:
