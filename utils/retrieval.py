@@ -496,8 +496,8 @@ class DenseRetrieval(BaseRetrieval):
         CFG,
         training_args,
         tokenize_fn,
-        # num_neg: Optional[int] = 2, # for way 2
-        num_neg: Optional[int] = 5, # for way 1
+        num_neg: Optional[int] = 2, # for way 2
+        # num_neg: Optional[int] = 3, # for way 1
         data_path: Optional[str] = "/opt/ml/retrieval",
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> None:
@@ -507,19 +507,20 @@ class DenseRetrieval(BaseRetrieval):
             output_dir="dense_retrieval",
             evaluation_strategy="epoch",
             learning_rate=1e-5,
-            # per_device_train_batch_size=7,
-            # per_device_eval_batch_size=7,
-            per_device_train_batch_size=4,
-            per_device_eval_batch_size=4,
+            per_device_train_batch_size=8,
+            per_device_eval_batch_size=8,
+            # per_device_train_batch_size=6,
+            # per_device_eval_batch_size=6,
             num_train_epochs=20,
             weight_decay=0.01,
-            gradient_accumulation_steps=32,
+            gradient_accumulation_steps=16,
+            # gradient_accumulation_steps=21,
             fp16=True,      # False 버전은 구현 중에 있음. 
         )
         self.CFG = CFG
         self.training_args = training_args
         # self.model_name = CFG['model']['model_name']
-        self.model_name = 'klue/bert-base'
+        self.model_name = 'klue/bert-base' # 'klue/roberta-base'
         self.data_dir = "/opt/ml/input/data/train_dataset/"
         self.dataset = load_from_disk(self.data_dir+"train")
         self.valid_dataset = load_from_disk(self.data_dir+"validation")
@@ -652,7 +653,7 @@ class DenseRetrieval(BaseRetrieval):
                             bm25_outputs = self.p_encoder(**bm25_inputs)    # (batch_size*(self.bm25_topk), emb_dim)   -> (B*(N+1), H)
 
                             # Calculate similarity score & loss
-                            # p_outputs = torch.cat([p_outputs, bm25_outputs], dim=0)     # (B+B*(N+1), H)
+                            p_outputs = torch.cat([p_outputs, bm25_outputs], dim=0)     # (B+B*(N+1), H)
                             sim_scores = torch.matmul(q_outputs, torch.transpose(p_outputs, 0, 1))  # (B, H) x (H, B+B*(N+1)) = (batch_size, B+B*(N+1)). B=8이면 8+24 = 32
 
                             # 먼저 inbatch 로 loss 가 얼마나 떨어지고, MRR이 ㄹ얼마나 나오는지 해보자.... inbatch, B15로 하니까 1epoch 1.5분.
@@ -695,27 +696,7 @@ class DenseRetrieval(BaseRetrieval):
         
         wandb.finish()
         
-        # passage 에 대해 미리 만들어둬보자...
-        with torch.no_grad():
-            self.p_encoder.eval()
-
-            passage_embs = []
-            for batch in tqdm(self.passage_dataloader, desc='DenseRetrieval, 전체 문서에 대한 embedding 계산 중'):
-                batch = tuple(t.to(args.device) for t in batch)
-                
-                passage_inputs = {
-                    'input_ids': batch[0],          # (B, max_len)
-                    'attention_mask': batch[1],
-                    'token_type_ids': batch[2]
-                }
-                if args.fp16:
-                    with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
-                        passage_emb = self.p_encoder(**passage_inputs).to('cpu')
-                passage_embs.append(passage_emb)    # [(batch, H), (batch, H), ... , (last_batch, H)]
-            
-            stacked = torch.cat(passage_embs, dim=0).to(args.device)    # (num_passage=whole_corpus, emb_dim)
-            
-        self.passage_embs = stacked
+        
         
         
     #### 새롭게 추가한부분
@@ -819,8 +800,8 @@ class DenseRetrieval(BaseRetrieval):
             만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
         """
         
-        p_pickle_name = "0620test7_p_dense_embedding_randneg_bm25neg_" + f"B{(self.num_neg+1)*self.args.per_device_train_batch_size*self.args.gradient_accumulation_steps}.pth"
-        q_pickle_name = "0620test7_q_dense_embedding_randneg_bm25neg_"+ f"B{(self.num_neg+1)*self.args.per_device_train_batch_size*self.args.gradient_accumulation_steps}.pth"
+        p_pickle_name = "0620test8_p_dense_embedding_randneg_bm25neg_" + f"B{(self.num_neg+1)*self.args.per_device_train_batch_size*self.args.gradient_accumulation_steps}.pth"
+        q_pickle_name = "0620test8_q_dense_embedding_randneg_bm25neg_"+ f"B{(self.num_neg+1)*self.args.per_device_train_batch_size*self.args.gradient_accumulation_steps}.pth"
         p_emb_path = os.path.join(self.data_path, p_pickle_name)
         q_emb_path = os.path.join(self.data_path, q_pickle_name)
         
@@ -834,17 +815,40 @@ class DenseRetrieval(BaseRetrieval):
             print("\nEmbeddings are not detected!! Prepare Negatives in batch...")
             print(f"Training with this data:\n{self.dataset}\n")
             print(f"inbatch try!!")
-            self.prepare_negative(self.dataset, self.num_neg, self.tokenizer, add_bm25=True)
+            # self.prepare_negative(self.dataset, self.num_neg, self.tokenizer, add_bm25=True)
             print("Build dense embedding...")
-            self.train(CFG=self.CFG)
+            # self.train(CFG=self.CFG)
             
             # way 2.
-            # self.in_batch_train(CFG=self.CFG)
+            self.in_batch_train(CFG=self.CFG)
             print("training done")
             
             torch.save(self.p_encoder.state_dict(), p_emb_path)
             torch.save(self.q_encoder.state_dict(), q_emb_path)
             print("Embedding model saved.")
+            
+            
+        # passage 에 대해 미리 만들어둬보자...
+        with torch.no_grad():
+            self.p_encoder.eval()
+
+            passage_embs = []
+            for batch in tqdm(self.passage_dataloader, desc='DenseRetrieval, 전체 문서에 대한 embedding 계산 중'):
+                batch = tuple(t.to(self.args.device) for t in batch)
+                
+                passage_inputs = {
+                    'input_ids': batch[0],          # (B, max_len)
+                    'attention_mask': batch[1],
+                    'token_type_ids': batch[2]
+                }
+                if self.args.fp16:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
+                        passage_emb = self.p_encoder(**passage_inputs).to('cpu')
+                passage_embs.append(passage_emb)    # [(batch, H), (batch, H), ... , (last_batch, H)]
+            
+            stacked = torch.cat(passage_embs, dim=0).to(self.args.device)    # (num_passage=whole_corpus, emb_dim)
+            
+        self.passage_embs = stacked
 
     def train(self, args=None, CFG=None):
         _name = CFG['실험명']
@@ -865,7 +869,7 @@ class DenseRetrieval(BaseRetrieval):
         ]
         optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
         t_total = len(self.train_dataloader) // args.gradient_accumulation_steps * args.num_train_epochs
-        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total)
+        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=100, num_training_steps=t_total)
 
         if self.args.fp16:
             scaler = torch.cuda.amp.GradScaler(enabled=True)
