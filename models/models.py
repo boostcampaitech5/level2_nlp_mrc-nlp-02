@@ -182,7 +182,7 @@ class AutoModelForQuestionAnsweringAndMLM(nn.Module):
             mlm_loss_fct = CrossEntropyLoss(ignore_index=-100)
             prediction_scores = self.mlm_outputs(sequence_output)
             mlm_loss = mlm_loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
-            total_loss = total_loss + mlm_loss if total_loss is not None else mlm_loss
+            total_loss = total_loss + (mlm_loss * 0.5) if total_loss is not None else mlm_loss
 
         if not return_dict:
             output = (start_logits, end_logits) + outputs[2:]
