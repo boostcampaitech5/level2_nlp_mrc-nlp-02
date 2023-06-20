@@ -16,6 +16,7 @@ retrieval/*.bin
 !colbert/*.py
 colbert
 col_eval.sh
+*.bin
 nltk_data/*
 
 ### Git ###
