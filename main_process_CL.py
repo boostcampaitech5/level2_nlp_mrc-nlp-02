@@ -24,7 +24,7 @@ from tqdm.auto import tqdm
 
 ### 우리가 만든 라이브러리 ###
 from utils import utils, data_controller, retriever_metric, retrieval
-from input.code.trainer_qa import QuestionAnsweringTrainer
+from input.code.trainer_qa import QuestionAnsweringTrainer_CL
 from input.code.utils_qa import postprocess_qa_predictions
 from input.code.evaluation import f1_score
 from models.models import *
@@ -119,8 +119,11 @@ if __name__ == "__main__":
         # train/valid 데이터셋 정의
         printer.start('train/valid 데이터셋 정의')
         if CFG['model']['pretrain']:
-            aug_df = pd.read_csv('/opt/ml/input/data/' + CFG['model']['pretrain'])
-            aug_df.drop(['Unnamed: 0'], axis = 1, inplace = True)
+            if CFG['CL']=='train':
+                aug_df = pd.read_csv(CFG['model']['pretrain'])
+            else:
+                aug_df = pd.read_csv('/opt/ml/input/data/' + CFG['model']['pretrain'])
+                aug_df.drop(['Unnamed: 0'], axis = 1, inplace = True)
             aug_df['id'] = aug_df['id'].apply(lambda x:str(x))
             aug_df['answers'] = aug_df['answers'].apply(eval)
             new_data = Dataset.from_pandas(aug_df)
@@ -165,10 +168,10 @@ if __name__ == "__main__":
         data_collator = DataCollatorWithPadding(
             tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
         )
-
+        # breakpoint()
         # Trainer 초기화
         printer.start("Trainer 초기화")
-        trainer = QuestionAnsweringTrainer(
+        trainer = QuestionAnsweringTrainer_CL(
             model=model,
             args=training_args,
             train_dataset=train_data,
@@ -179,11 +182,13 @@ if __name__ == "__main__":
             post_process_function=post_processing_function,
             compute_metrics=utils.compute_metrics,
         )
+        # breakpoint()
         printer.done()
 
         # Training
         printer.start("학습중...")
         train_result = trainer.train()
+        breakpoint()
         trainer.save_model()
         printer.done()
         printer.start("모델 및 metrics 저장")
@@ -221,7 +226,7 @@ if __name__ == "__main__":
             tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
         )
         printer.start("Trainer 초기화")
-        trainer = QuestionAnsweringTrainer(
+        trainer = QuestionAnsweringTrainer_CL(
             model=model,
             args=training_args,
             tokenizer=tokenizer,
