@@ -10,7 +10,7 @@ from datetime import datetime, timezone, timedelta
 with open('./config/use/use_config.yaml') as f:
     CFG = yaml.load(f, Loader=yaml.FullLoader)
 
-files=sorted(os.listdir("./input/data/ensemble/ingredients/"))
+files=sorted(os.listdir("./input/data/ensemble/ingredients/"),reverse=True)
 
 weight={}
 file_name=[]
@@ -19,8 +19,8 @@ for i, file in enumerate(files):
     with open(os.path.join(f"./input/data/ensemble/ingredients/{file}"), "r", encoding="utf-8") as f:
         raw = json.load(f)
     globals()[f'df{i}']=pd.DataFrame({'id':raw.keys(),f'predict{i}':raw.values()})
-    weight[f'predict{i}']=float(re.sub('.json','',file.split('-')[-1]))
-    file_name.append(file.split('-')[-2]+'-'+file.split('-')[-1].replace('.json',''))
+    weight[f'predict{i}']=float(re.sub('.json','',file.split('-')[0]))
+    file_name.append(file.split('-')[0]+'-'+file.split('-')[1])
     if i==0:
         data=globals()[f'df{i}'].copy()
     elif i>0:
@@ -38,8 +38,8 @@ def hard_voting_top1(data):
     df=data.copy()
     for i in range(len(df)):
         df.loc[i,'predict']=df.loc[i,predict_columns].mode()[0]
-        df.loc[i,'predict_cnt']=len(data.loc[i,predict_columns].mode().values)
-        df.at[i,'predict_list']=data.loc[i,predict_columns].mode().values
+        df.loc[i,'predict_cnt']=len(df.loc[i,predict_columns].mode().values)
+        df.at[i,'predict_list']=df.loc[i,predict_columns].mode().values
     
     for idx in df[df['predict_cnt']>1].index:
         for i in range(len(files)):
@@ -52,8 +52,8 @@ def hard_voting_weight(data):
     df=data.copy()
     for i in range(len(df)):
         df.loc[i,'predict']=df.loc[i,predict_columns].mode()[0]
-        df.loc[i,'predict_cnt']=len(data.loc[i,predict_columns].mode().values)
-        df.at[i,'predict_list']=data.loc[i,predict_columns].mode().values
+        df.loc[i,'predict_cnt']=len(df.loc[i,predict_columns].mode().values)
+        df.at[i,'predict_list']=df.loc[i,predict_columns].mode().values
     
     for i in df[df['predict_cnt']>1].index:
         weight_sum=defaultdict(int)
