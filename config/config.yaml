@@ -37,3 +37,16 @@ option:
 wandb:
   id: gibum1228
   project: MRC
+  sweep:
+    name: MRC
+    program: sweep_main_process.py
+    method: bayes # grid, random, bayes
+    metric:
+      name: train/exact_match
+      goal: maximize
+    parameters:
+      epochs:
+        values: [3, 4, 5]
+      learning_rate:
+        min: 0.00001
+        max: 0.00009
