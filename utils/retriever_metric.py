@@ -6,13 +6,15 @@ class score_retrieved_docs():
     """
     TFIDF, BM25, RanNeg 등으로 같이 학습하여 retrieved 한 docs들의 점수를 평가하는 class 선언.
     """
-    def __init__(self, dataset, topk_docs, mean='context', metric='ALL'):
+    def __init__(self, dataset, topk_docs, mean='context', metric='ALL', return_type='list'):
         self.dataset = dataset
         self.answers = [answer['text'][0] for answer in self.dataset['answers']]
         self.gold_contexts = self.dataset['context']
         self.topk_docs = topk_docs['context_for_metric'].tolist()
         self.c_or_a = self.gold_contexts if mean=='context' else self.answers
         self.mean = mean
+        self.metric = metric
+        self.return_type = return_type
      
     def mean_reciprocal_rank(self, contexts_or_answers, topk_docs, mean='context'):
         """
@@ -46,8 +48,10 @@ class score_retrieved_docs():
                         break
             mrr_values.append(mrr_value)
         
-        mrr_value = sum(mrr_values)/len(mrr_values)
-        return mrr_value
+        if self.return_type == "list":
+            return mrr_values
+        else:
+            return sum(mrr_values)/len(mrr_values)
 
     def get_relevance_score(self, answers, gold_contexts, topk_docs):
         """
@@ -79,7 +83,6 @@ class score_retrieved_docs():
             relevance_score.append(relevance_idx)
         
         return relevance_score
-
 
     def discounted_cumulative_gain(self, answers, gold_contexts, topk_docs, relevance=None):
         """
@@ -136,9 +139,11 @@ class score_retrieved_docs():
             IDCG_values.append(IDCG_value)
             
         NDCG_values = [dcg/idcg if not idcg == 0.0 else 0.0 for dcg, idcg in zip(DCG_values, IDCG_values)]
-        NDCG_value = sum(NDCG_values)/len(NDCG_values)
         
-        return NDCG_value 
+        if self.return_type == 'list':
+            return NDCG_values
+        else:
+            return sum(NDCG_values)/len(NDCG_values)
 
     def test(self, metric='ALL'):
         
@@ -149,7 +154,7 @@ class score_retrieved_docs():
                                                               topk_docs=self.topk_docs, relevance=None)
         
         elif metric == 'MRR':
-            MRR_value = self.mean_reciprocal_rank(contexts_or_answers, topk_docs, mean=self.mean)
+            MRR_value = self.mean_reciprocal_rank(contexts_or_answers=self.c_or_a, topk_docs=self.topk_docs, mean=self.mean)
         
         else:
             MRR_value = self.mean_reciprocal_rank(contexts_or_answers=self.c_or_a, topk_docs=self.topk_docs, mean=self.mean)
