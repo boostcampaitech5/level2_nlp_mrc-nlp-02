@@ -23,7 +23,7 @@ from transformers import (
 from tqdm.auto import tqdm
 
 ### 우리가 만든 라이브러리 ###
-from utils import utils, data_controller, retriever_metric, retrieval
+from utils import utils, data_controller, retriever_metric, retrieval, curriculum
 from input.code.trainer_qa import QuestionAnsweringTrainer
 from input.code.utils_qa import postprocess_qa_predictions
 from models.models import *
@@ -133,7 +133,13 @@ if __name__ == "__main__":
         val_data = train_dataset['validation']
         print(val_data)
         printer.done()
-
+        
+        # ### train data sorting for curriculum learning
+        # printer.start("train data 정렬 for curriculum learning")
+        # cl = curriculum.check_question_difficulties(dataset=train_data, CFG=CFG, training_args=training_args, tokenizer=tokenizer)
+        # train_data = cl.mark_score_with_retriever(option='BM25')
+        # printer.done()
+        
         # 데이터 토큰나이징
         printer.start("train 토크나이징")
         fn_kwargs['column_names']= train_data.column_names
