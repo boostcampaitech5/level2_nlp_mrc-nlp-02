@@ -385,51 +385,62 @@ class DenseColBERT(BaseRetrieval):
             Q와 D를 embedding할 기학습된 ColBERT 모델을 불러옵니다.
             만약 미리 저장된 파일이 없다면 학습을 먼저 시켜야 합니다.
         """
-        MODEL = "klue/bert-base"
-        # Pickle을 저장합니다.
-        model_name = self.CFG['colbert_model_name']
-        colbert_path = os.path.join('/opt/ml/colbert/best_model', model_name)
+        
+        batched_p_embs_name = f"{self.CFG['colbert_model_name']}_batched_p_embs.bin"
+        batched_p_embs_path = os.path.join(self.data_path, batched_p_embs_name)
 
-        if os.path.isfile(colbert_path):
-            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-            model_config = AutoConfig.from_pretrained(MODEL)
-            special_tokens = {"additional_special_tokens": ["[Q]", "[D]"]}
-            self.ret_tokenizer = AutoTokenizer.from_pretrained(MODEL)
-            self.ret_tokenizer.add_special_tokens(special_tokens)
-            self.model = ColbertModel.from_pretrained(MODEL)
-            self.model.resize_token_embeddings(self.ret_tokenizer.vocab_size + 2)
-
-            self.model.to(device)
-
-            self.model.load_state_dict(torch.load(colbert_path))
-            print('colbert model loaded')
-            
-            with torch.no_grad():
-                self.model.eval()
-
-                print("Start passage embedding.. ....")
-                self.batched_p_embs = []
-                P_BATCH_SIZE = 128
-                # Define a generator for iterating in chunks
-                def chunks(iterable, n, fillvalue=None):
-                    args = [iter(iterable)] * n
-                    return zip_longest(*args, fillvalue=fillvalue)
-
-                for step, batch in enumerate(tqdm(chunks(self.contexts, P_BATCH_SIZE), total=len(self.contexts)//P_BATCH_SIZE)):
-                    # The last batch can contain `None` values if the length of `context` is not divisible by 128
-                    batch = [b for b in batch if b is not None]
-
-                    # Tokenize the entire batch at once
-                    p = tokenize_colbert(batch, self.ret_tokenizer, corpus="doc").to("cuda")
-                    p_emb = self.model.doc(**p).to("cpu").numpy()
-                    self.batched_p_embs.append(p_emb)
-                
-                print('p_embs_n_batches: ', len(self.batched_p_embs))
-                print('in_batch_size:\n', self.batched_p_embs[0].shape)
-            
+        if os.path.isfile(batched_p_embs_path):
+            with open(batched_p_embs_path, "rb") as file:
+                self.batched_p_embs = pickle.load(file)
         else:
-            raise NameError('there is no colbert model in', str(colbert_path))
+            MODEL = "klue/bert-base"
+            # Pickle을 저장합니다.
+            model_name = self.CFG['colbert_model_name']
+            colbert_path = os.path.join('/opt/ml/colbert/best_model', model_name)
+
+            if os.path.isfile(colbert_path):
+                device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+                model_config = AutoConfig.from_pretrained(MODEL)
+                special_tokens = {"additional_special_tokens": ["[Q]", "[D]"]}
+                self.ret_tokenizer = AutoTokenizer.from_pretrained(MODEL)
+                self.ret_tokenizer.add_special_tokens(special_tokens)
+                self.model = ColbertModel.from_pretrained(MODEL)
+                self.model.resize_token_embeddings(self.ret_tokenizer.vocab_size + 2)
+
+                self.model.to(device)
+
+                self.model.load_state_dict(torch.load(colbert_path))
+                print('colbert model loaded')
+                
+                with torch.no_grad():
+                    self.model.eval()
+
+                    print("Start passage embedding.. ....")
+                    self.batched_p_embs = []
+                    P_BATCH_SIZE = 128
+                    # Define a generator for iterating in chunks
+                    def chunks(iterable, n, fillvalue=None):
+                        args = [iter(iterable)] * n
+                        return zip_longest(*args, fillvalue=fillvalue)
+
+                    for step, batch in enumerate(tqdm(chunks(self.contexts, P_BATCH_SIZE), total=len(self.contexts)//P_BATCH_SIZE)):
+                        # The last batch can contain `None` values if the length of `context` is not divisible by 128
+                        batch = [b for b in batch if b is not None]
+
+                        # Tokenize the entire batch at once
+                        p = tokenize_colbert(batch, self.ret_tokenizer, corpus="doc").to("cuda")
+                        p_emb = self.model.doc(**p).to("cpu").numpy()
+                        self.batched_p_embs.append(p_emb)
+                    
+                    print('p_embs_n_batches: ', len(self.batched_p_embs))
+                    print('in_batch_size:\n', self.batched_p_embs[0].shape)
+                    
+                    with open(batched_p_embs_path,  "wb") as file:
+                        pickle.dump(self.batched_p_embs, file)
+                
+            else:
+                raise NameError('there is no colbert model in', str(colbert_path))
 
     def get_relevant_doc_bulk(
         self, queries: List, k: Optional[int] = 1
@@ -442,21 +453,42 @@ class DenseColBERT(BaseRetrieval):
             k (Optional[int]): 1
                 상위 몇 개의 Passage를 반환할지 정합니다.
         """
-        
-        with timer("transform"):
-            with torch.no_grad():
-                self.model.eval()
-                q_seqs_val = tokenize_colbert(queries, self.ret_tokenizer, corpus="query").to("cuda")
-                q_emb = self.model.query(**q_seqs_val).to("cpu")
-                print('q_emb_size: \n', q_emb.size())
-        with timer("query ex search"):
-            dot_prod_scores = self.model.get_score(q_emb, self.batched_p_embs, eval=True)
-            print(dot_prod_scores.size())
+        # Pickle을 저장합니다.
+        dot_prod_scores_name = f"{self.CFG['colbert_model_name']}_dot_prod_score.bin"
+        dot_prod_scores_path = os.path.join(self.data_path, dot_prod_scores_name)
+        rank_name = f"{self.CFG['colbert_model_name']}_rank.bin"
+        rank_path = os.path.join(self.data_path, rank_name)
 
-            rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
-            print(dot_prod_scores)
-            print(rank)
-            print(rank.size())
+        if os.path.isfile(dot_prod_scores_path) and os.path.isfile(rank_path):
+            with open(dot_prod_scores_path, "rb") as file:
+                dot_prod_scores = pickle.load(file)
+            with open(rank_path, "rb") as file:
+                rank = pickle.load(file)            
+            print("ColBERT Rank loaded.")
+        else:
+            print("ColBERT Embedding")
+        
+            with timer("transform"):
+                with torch.no_grad():
+                    self.model.eval()
+                    q_seqs_val = tokenize_colbert(queries, self.ret_tokenizer, corpus="query").to("cuda")
+                    q_emb = self.model.query(**q_seqs_val).to("cpu")
+                    print('q_emb_size: \n', q_emb.size())
+            with timer("query ex search"):
+                dot_prod_scores = self.model.get_score(q_emb, self.batched_p_embs, eval=True)
+                print(dot_prod_scores.size())
+
+                rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
+                print(dot_prod_scores)
+                print(rank)
+                print(rank.size())
+                
+            with open(dot_prod_scores_path,  "wb") as file:
+                pickle.dump(dot_prod_scores, file)
+            with open(rank_path,  "wb") as file:
+                pickle.dump(rank, file)       
+                
+            print("ColBERT Rank Saved.")
             
         return dot_prod_scores[:,:k].tolist(), rank[:,:k].tolist()
 
