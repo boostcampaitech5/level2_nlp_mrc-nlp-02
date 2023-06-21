@@ -34,6 +34,7 @@ option:
   batch_size: 16
   use_fuzz: False
   check_retrieved_score: True
+  EDA: True
 wandb:
   id: gibum1228
   project: MRC

@@ -84,7 +84,7 @@ if __name__ == "__main__":
                config=CFG, entity=CFG['wandb']['id'], dir=save_path)
     # 데이터셋 가져오기
     printer.start('train/test 데이터셋 가져오기')
-    train_dataset = load_from_disk('input/data/train_dataset')
+    train_dataset = utils.get_dataset_after_EDA() if CFG['option']['EDA'] else load_from_disk('input/data/train_dataset')
     printer.done()
     # Trainer의 Args 객체 가져오기
     printer.start('Trainer Args 가져오기')
