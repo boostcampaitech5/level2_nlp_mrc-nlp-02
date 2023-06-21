@@ -253,7 +253,11 @@ if __name__ == "__main__":
     retriever.get_embedding()
 
     printer.start("top-k 추출하기")
-    df = retriever.retrieve(test_dataset['validation'], topk=CFG['option']['top_k_retrieval'])
+
+    if CFG['CL'] == 'extract':
+        df = retriever.retrieve(test_dataset, topk=CFG['option']['top_k_retrieval'])
+    else:
+        df = retriever.retrieve(test_dataset['validation'], topk=CFG['option']['top_k_retrieval'])
     printer.done()
 
     # retriever 성능 비교하기 - 현재 valid 데이터에 대해서만 평가. train에 대해서 진행하고 싶다면 주석을 풀어주세요.
@@ -281,18 +285,38 @@ if __name__ == "__main__":
         printer.done()
         
     printer.start("context가 추가된 test dataset 선언")
-    f = Features(
-            {
-                "context": Value(dtype="string", id=None),
-                "id": Value(dtype="string", id=None),
-                "question": Value(dtype="string", id=None),
-            }
-        )
-    test_dataset = DatasetDict({"validation": Dataset.from_pandas(df, features=f)})
+    # breakpoint()
+    # if CFG['CL'] == 'extract':
+    #     f = Features(
+    #             {
+    #                 "title": Value(dtype="string", id=None),
+    #                 "context": Value(dtype="string", id=None),
+    #                 "question": Value(dtype="string", id=None),
+    #                 "id": Value(dtype="string", id=None),
+    #                 "answers": Value(dtype="string", id=None),
+    #                 "document_id": Value(dtype="string", id=None),
+    #                 "__index_level_0__": Value(dtype="string", id=None),
+    #             }
+    #         )
+    # else:
+    #     f = Features(
+    #             {
+    #                 "context": Value(dtype="string", id=None),
+    #                 "id": Value(dtype="string", id=None),
+    #                 "question": Value(dtype="string", id=None),
+    #             }
+    #         )
+    # breakpoint()
+    # test_dataset = DatasetDict({"validation": Dataset.from_pandas(df, features=f)})
+    # breakpoint()
+    test_dataset = DatasetDict({"validation": Dataset.from_pandas(df)})
+
     printer.done()
 
     # reader 단계
+
     test_data = test_dataset['validation']
+    
     printer.start("test 토크나이징")
     fn_kwargs['column_names']= test_data.column_names
     test_data = test_data.map(
@@ -309,8 +333,41 @@ if __name__ == "__main__":
         test_dataset=test_data,
         test_examples=test_dataset['validation']
     )
+    printer.done()
+    
+    if CFG['CL'] == 'extract':
+        
+        printer.start("f1 계산 중...")
+        df_CL = load_from_disk("input/data/train_dataset")
+        df_CL = pd.DataFrame( df_CL['train'] )
+        # display(df_CL.head(2))
+        print('df_CL: ',len(df_CL))
+        pred = pd.DataFrame(predictions)
+        # display(pred.head(2))
+        print('pred: ',len(pred))
+        df_CL = pd.merge(left = df_CL , right = pred, how = "inner", on = "id")
+        # display(df_CL.head(2))
+        print('df_CL: ',len(df_CL))
+        
+        def f1_result(x):
+            gt = x[0]['text'][0]
+            p = x[1]
+            # print(gt,p, exact_match_score(p,gt))
+            # print(gt,p, f1_score(p,gt))
+            return f1_score(p,gt)
+        printer.done()
+        df_CL['f1'] = df_CL[['answers','prediction_text' ]].apply(f1_result, axis = 1)
+        printer.start("f1 기준으로 sorting...")
+        df_CL = df_CL.sort_values(by =['f1'])
+        df_CL = df_CL.drop(columns = ['prediction_text','f1'])
+        df_CL.to_csv(save_path+'/prediction_train/train_mrc.csv', sep=',', na_rep='NaN',index=False)
+        printer.done()
+
+
+
+# 'train_mrc.csv'
+#     {}{P}{}{}[점수]
+# 'train_ret.csv'
 
     
-
-    printer.done()
     print("main_process 끝 ^_^")
