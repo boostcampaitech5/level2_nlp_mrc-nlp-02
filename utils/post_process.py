@@ -25,18 +25,24 @@ def remove_josa(raw1, raw2):
 
     df3['okt_sentence_mask']=df3['sentence_mask'].apply(lambda x: okt.pos(x))
     df3['okt_sentence']=df3['sentence'].apply(lambda x: okt.pos(x))
-
+    
     for idx in range(len(df3)):
         for i,value in enumerate(df3.loc[idx,'okt_sentence_mask']):
-            if value[0]=='MASK':
+            if 'MASK' in value[0]:
                 df3.loc[idx,'start_idx']=i
-                if i+1<len(df3.loc[idx,'okt_sentence_mask']):
-                    df3.loc[idx,'next_mask_word']=df3.loc[idx,'okt_sentence_mask'][i+1][0]
-                    df3.loc[idx,'next_mask_okt']=df3.loc[idx,'okt_sentence_mask'][i+1][-1]
+                if value[0]=='MASK':    
+                    if i+1<len(df3.loc[idx,'okt_sentence_mask']):
+                        df3.loc[idx,'next_mask_word']=df3.loc[idx,'okt_sentence_mask'][i+1][0]
+                        df3.loc[idx,'next_mask_okt']=df3.loc[idx,'okt_sentence_mask'][i+1][-1]
+                    else:
+                        df3.loc[idx,'next_mask_word']='exception'
+                        df3.loc[idx,'next_mask_okt']='exception'
+                    break
                 else:
-                    df3.loc[idx,'next_mask_word']='exception'
-                    df3.loc[idx,'next_mask_okt']='exception'
-                break
+                    df3.loc[idx,'next_mask_word']=value[0].replace('MASK','')
+                    df3.loc[idx,'next_mask_okt']='Alpha'
+                    break
+
 
     df3['start_idx']=df3['start_idx'].astype('int')
 
@@ -52,8 +58,8 @@ def remove_josa(raw1, raw2):
 
     df3['last_josa_cnt']=df3['predict'].apply(lambda x: len((re.findall(f'.+(?=[은는을를이가에와]$)',x))))
 
-    idx1=df3[(df3['next_mask_word'].isin(josa_L1))&(df3['space']=='N')|(df3['next_mask_okt'].isin(['Punctuation','Foreign']))|(df3['last_josa_cnt']==0)].index
-    idx2=df3[~((df3['next_mask_word'].isin(josa_L1))&(df3['space']=='N')|(df3['next_mask_okt'].isin(['Punctuation','Foreign']))|(df3['last_josa_cnt']==0))].index
+    idx1=df3[~(~((df3['next_mask_word'].isin(josa_L1)) & (df3['space']=='N'))&~(df3['next_mask_okt'].isin(['Punctuation','Foreign']))&(df3['last_josa_cnt']>0))].index
+    idx2=df3[~((df3['next_mask_word'].isin(josa_L1)) & (df3['space']=='N'))&~(df3['next_mask_okt'].isin(['Punctuation','Foreign']))&(df3['last_josa_cnt']>0)].index
 
     for i in idx2:
         df3.loc[i,'predict']=re.findall(f'.+(?=[은는을를이가에와]$)',df3.loc[i,'predict'])[0]
