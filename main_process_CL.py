@@ -119,7 +119,7 @@ if __name__ == "__main__":
         # train/valid 데이터셋 정의
         printer.start('train/valid 데이터셋 정의')
         if CFG['model']['pretrain']:
-            if CFG['CL']=='train':
+            if 'train' in CFG['CL']:
                 aug_df = pd.read_csv(CFG['model']['pretrain'])
             else:
                 aug_df = pd.read_csv('/opt/ml/input/data/' + CFG['model']['pretrain'])
@@ -241,7 +241,7 @@ if __name__ == "__main__":
     training_args.do_predict = True
     
 
-    if CFG['CL'] == 'extract':
+    if 'extract' in CFG['CL']:
         training_args.output_dir = save_path + '/prediction_train'
         test_dataset = train_dataset['train']
         print('prediction with train dataset for Curiculum learning')
@@ -259,7 +259,7 @@ if __name__ == "__main__":
 
     printer.start("top-k 추출하기")
 
-    if CFG['CL'] == 'extract':
+    if 'extract' in CFG['CL']:
         df = retriever.retrieve(test_dataset, topk=CFG['option']['top_k_retrieval'])
     else:
         df = retriever.retrieve(test_dataset['validation'], topk=CFG['option']['top_k_retrieval'])
@@ -340,7 +340,7 @@ if __name__ == "__main__":
     )
     printer.done()
     
-    if CFG['CL'] == 'extract':
+    if 'extract' in CFG['CL']:
         
         printer.start("f1 계산 중...")
         df_CL = load_from_disk("input/data/train_dataset")
@@ -363,7 +363,37 @@ if __name__ == "__main__":
         printer.done()
         df_CL['f1'] = df_CL[['answers','prediction_text' ]].apply(f1_result, axis = 1)
         printer.start("f1 기준으로 sorting...")
-        df_CL = df_CL.sort_values(by =['f1'])
+        if '-N' in CFG['CL']:
+            breakpoint()
+            # 10개 랜덤으로 뽑은 후, 각 데이터셋마다 f1 계산한다.
+            # 각 데이터셋은 섞어 주기로 한다.
+            k = len(df_CL)//10
+            
+            if 'random' in CFG['CL']:
+                df_tmp = []
+                for _ in range(10):
+                    df_ = df_CL.sample(k,random_state=42)
+                    df_tmp.append(df_)
+                    df_CL = pd.merge(df_CL, df_, how='outer', indicator=True).query("_merge=='left_only'").drop(columns=['_merge'])
+            else:
+                df_tmp = [df_CL.loc[i:i+k-1, :] for i in range(0, len(df_CL), k)][:-1]  # 10개만 숫자 맞춰서 뽑는다.
+            print(len(df_tmp))
+            print([len(df_tmp[i]) for i in range(len(df_tmp))])
+
+            # 각 데이터셋마다 f1 계산한 후, f1_list = [(ids, f1), (ids, f1), ..]
+            f1_list = [(i,sum(list(df['f1']))/k) for i,df in enumerate(df_tmp)]
+            print(f1_list)
+            f1_list = sorted(f1_list, key=lambda x: x[1], reverse=True)
+
+            df_CL = pd.DataFrame()
+            for i,f1 in f1_list:
+                df_suffle = df_tmp[i].sample(frac=1).reset_index(drop=True)
+                df_CL = pd.concat([df_CL,df_suffle])
+
+            df_CL = df_CL.reset_index(drop=True)
+        else:
+            
+            df_CL = df_CL.sort_values(by =['f1'])
         df_CL = df_CL.drop(columns = ['prediction_text','f1'])
         df_CL.to_csv(save_path+'/prediction_train/train_mrc.csv', sep=',', na_rep='NaN',index=False)
         printer.done()
