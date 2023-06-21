@@ -267,14 +267,15 @@ class SparseBM25(BaseRetrieval):
     ) -> None:
         super().__init__(CFG, training_args, tokenize_fn, data_path, context_path)
 
-    def get_embedding(self) -> None:
+    def get_embedding(self, for_train=False) -> None:
 
         """
         Summary:
             BM25Okapi를 pickle로 저장합니다.
             만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
         """
-
+        self.for_train = for_train
+        
         # Pickle을 저장합니다.
         pickle_name = f"bm25_embedding.bin"
         bm25_path = os.path.join(self.data_path, pickle_name)
@@ -304,6 +305,9 @@ class SparseBM25(BaseRetrieval):
             p_embedding을 따로 저장하지 않기 때문에 TF-IDF보다 비교적 많은 시간이 소요됩니다.
             for_train 인자를 넘기면 저장할 수 있도록 기능을 추가하였습니다.
         """
+        if not for_train:
+            for_train = self.for_train      # True일 때 = Negative sampling을 위해서/각종 스코어를 미리 계산해보기 위해서
+        
         if for_train:       # dense embedding에서 호출하는 경우엔 무조건 train에 대해서만 호출한다 -> 저장된 파일을 save and load
             bm25_docs_name = "bm25_relevant_docs_for_DenseEmbedding.npy"
             bm25_docs_path = os.path.join(self.data_path, bm25_docs_name)
