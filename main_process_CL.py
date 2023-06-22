@@ -188,7 +188,7 @@ if __name__ == "__main__":
         # Training
         printer.start("학습중...")
         train_result = trainer.train()
-        breakpoint()
+        # breakpoint()
         trainer.save_model()
         printer.done()
         printer.start("모델 및 metrics 저장")
@@ -364,7 +364,7 @@ if __name__ == "__main__":
         df_CL['f1'] = df_CL[['answers','prediction_text' ]].apply(f1_result, axis = 1)
         printer.start("f1 기준으로 sorting...")
         if '-N' in CFG['CL']:
-            breakpoint()
+            # breakpoint()
             # 10개 랜덤으로 뽑은 후, 각 데이터셋마다 f1 계산한다.
             # 각 데이터셋은 섞어 주기로 한다.
             k = len(df_CL)//10
@@ -397,12 +397,6 @@ if __name__ == "__main__":
         df_CL = df_CL.drop(columns = ['prediction_text','f1'])
         df_CL.to_csv(save_path+'/prediction_train/train_mrc.csv', sep=',', na_rep='NaN',index=False)
         printer.done()
-
-
-
-# 'train_mrc.csv'
-#     {}{P}{}{}[점수]
-# 'train_ret.csv'
 
     
     print("main_process 끝 ^_^")
