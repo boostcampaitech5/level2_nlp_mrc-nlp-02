@@ -1,3 +1,5 @@
+# baseline : https://github.com/boostcampaitech3/level2-mrc-level2-nlp-11
+
 import pandas as pd
 import torch.nn as nn
 import numpy as np
@@ -15,9 +17,6 @@ from transformers import (
     TrainingArguments,
     get_linear_schedule_with_warmup,
 )
-
-# baseline : https://github.com/boostcampaitech3/level2-mrc-level2-nlp-11
-
 
 def set_columns(dataset):
     dataset = pd.DataFrame(
