@@ -1,6 +1,6 @@
 실험명: 실험명
 seed: 42
-CL:  # extract train
+CL:  # extract train extract-N extract-N-random train
 # -> CL을 위한 dataset을 뽑으려면 (do_train: False, do_eval: False, model_path 지정)상태로 만들어준 후 extrat를,  
 # -> CL을 하려면 True로 한 뒤 train을, CL을 하지 않으려면 None
 retrieval_name: ColBERT # BM25 SparseTFIDF
@@ -37,6 +37,8 @@ option:
   batch_size: 16
   use_fuzz: False
   check_retrieved_score: True
+ensemble:
+  option: hard_voting_random #hard_voting_random, hard_voting_top1, hard_voting_weight
 wandb:
   id: gibum1228
   project: MRC
