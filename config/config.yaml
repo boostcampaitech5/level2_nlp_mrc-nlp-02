@@ -38,7 +38,7 @@ option:
   use_fuzz: False
   check_retrieved_score: True
 ensemble:
-  option: hard_voting_random #hard_voting_random, hard_voting_top1, hard_voting_weight
+  option: hard_voting_random #hard_voting_random, hard_voting_top1, hard_voting_weight, soft_voting_sum, soft_voting_avg
 wandb:
   id: gibum1228
   project: MRC
