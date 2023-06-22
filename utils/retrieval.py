@@ -309,7 +309,7 @@ class SparseBM25(BaseRetrieval):
             for_train = self.for_train      # True일 때 = Negative sampling을 위해서/각종 스코어를 미리 계산해보기 위해서
         
         if for_train:       # dense embedding에서 호출하는 경우엔 무조건 train에 대해서만 호출한다 -> 저장된 파일을 save and load
-            bm25_docs_name = "bm25_relevant_docs_for_DenseEmbedding.npy"
+            bm25_docs_name = "bm25_relevant_docs_for_DenseEmbedding_train.npy"
             bm25_docs_path = os.path.join(self.data_path, bm25_docs_name)
             print("BM25 is now used for 'Dense Embedding' training.")
             
@@ -335,10 +335,6 @@ class SparseBM25(BaseRetrieval):
             with timer("query ex search"):
                 result = np.array([self.bm25.get_scores(q) for q in tqdm(tokenized_queries, desc='SparseBM25 query ex search')])
             
-            
-            np.save(bm25_docs_path, result)
-            print("BM25 top docs saved!")
-
         doc_scores = []
         doc_indices = []
         for i in tqdm(range(result.shape[0]), desc='SparseBM25 get relevant doc bulk...'):
@@ -542,7 +538,7 @@ class DenseRetrieval(BaseRetrieval):
             aug_df['answers'] = aug_df['answers'].apply(eval)
             aug_df['context_length'] = aug_df['context'].apply(len)
             aug_df = aug_df.sort_values('context_length', ascending=False)
-            aug_df = aug_df.head(50000)
+            aug_df = aug_df.head(51000)
             
             self.pretrain_dataset = Dataset.from_pandas(aug_df)
             
@@ -832,7 +828,7 @@ class DenseRetrieval(BaseRetrieval):
             Dense Embedding을 pickle로 저장합니다.
             만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
         """
-        pickle_head_name = "0622_DR_inbatch_B" + str(self.args.train_batch_size)
+        pickle_head_name = "0622_02_DR_inbatch_B" + str(self.args.train_batch_size)
         
         p_pickle_name = "p_" + pickle_head_name + ".pth"
         q_pickle_name = "q_" + pickle_head_name + ".pth"
@@ -861,7 +857,7 @@ class DenseRetrieval(BaseRetrieval):
                     learning_rate=1e-5,
                     per_device_train_batch_size=28,
                     per_device_eval_batch_size=28,
-                    num_train_epochs=1,
+                    num_train_epochs=3,
                     weight_decay=0.01,
                     gradient_accumulation_steps=5,
                     warmup_steps=150,
@@ -870,8 +866,8 @@ class DenseRetrieval(BaseRetrieval):
                 
                 self.in_batch_train(dataset=self.pretrain_dataset, args=pretrain_args, CFG=self.CFG, add_bm25=False)
                 
-                p_pre = "p_pre_" + pickle_head_name + ".pth"
-                q_pre = "q_pre_" + pickle_head_name + ".pth"
+                p_pre = "p_pre_0622_02_PB3_" + pickle_head_name + ".pth"
+                q_pre = "q_pre_0622_02_PB3_" + pickle_head_name + ".pth"
                 p_pre_path = os.path.join(self.data_path, p_pre)
                 q_pre_path = os.path.join(self.data_path, q_pre)
                 
