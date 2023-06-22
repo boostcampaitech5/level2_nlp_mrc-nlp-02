@@ -10,23 +10,47 @@ from datetime import datetime, timezone, timedelta
 with open('./config/use/use_config.yaml') as f:
     CFG = yaml.load(f, Loader=yaml.FullLoader)
 
-files=sorted(os.listdir("./input/data/ensemble/ingredients/"),reverse=True)
+all_files=sorted(os.listdir("./input/data/ensemble/ingredients/"),reverse=True)
+soft_files=[]
+hard_files=[]
+for file in all_files:
+    if 'nbest' in file:
+        soft_files.append(file)
+    else:
+        hard_files.append(file)
 
 weight={}
 file_name=[]
 
-for i, file in enumerate(files):
-    with open(os.path.join(f"./input/data/ensemble/ingredients/{file}"), "r", encoding="utf-8") as f:
-        raw = json.load(f)
-    globals()[f'df{i}']=pd.DataFrame({'id':raw.keys(),f'predict{i}':raw.values()})
-    weight[f'predict{i}']=float(re.sub('.json','',file.split('-')[0]))
-    file_name.append(file.split('-')[0]+'-'+file.split('-')[1])
-    if i==0:
-        data=globals()[f'df{i}'].copy()
-    elif i>0:
-        data=pd.merge(data,globals()[f'df{i}'],on='id')
+files = globals()[CFG['ensemble']['option'][:4]+'_files']
 
-predict_columns=data.columns[1:]
+if CFG['ensemble']['option'][:4]=='hard':
+    for i, file in enumerate(files):
+        with open(os.path.join(f"./input/data/ensemble/ingredients/{file}"), "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        globals()[f'df{i}']=pd.DataFrame({'id':raw.keys(),f'predict{i}':raw.values()})
+        weight[f'predict{i}']=float(re.sub('.json','',file.split('-')[0]))
+        file_name.append(file.split('-')[0]+'-'+file.split('-')[1])
+        if i==0:
+            data=globals()[f'df{i}'].copy()
+        elif i>0:
+            data=pd.merge(data,globals()[f'df{i}'],on='id')
+    predict_columns=data.columns[1:]
+
+else:
+    for i, file in enumerate(files):
+        with open(os.path.join(f"./input/data/ensemble/ingredients/{file}"), "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        globals()[f'df{i}']=pd.DataFrame({'id':raw.keys(),f'all{i}':raw.values()})
+        globals()[f'df{i}'][f'predict{i}']=globals()[f'df{i}'][f'all{i}'].apply(lambda x: x[0]['text'])
+        globals()[f'df{i}'][f'probability{i}']=globals()[f'df{i}'][f'all{i}'].apply(lambda x: x[0]['probability'])
+        weight[f'predict{i}']=float(re.sub('.json','',file.split('-')[0]))
+        file_name.append(file.split('-')[0]+'-'+file.split('-')[1])
+        if i==0:
+            data=globals()[f'df{i}'].copy()
+        elif i>0:
+            data=pd.merge(data,globals()[f'df{i}'],on='id')
+
 
 def hard_voting_random(data):
     df=data.copy()
@@ -60,6 +84,29 @@ def hard_voting_weight(data):
         for name, prediction in zip(predict_columns,df.loc[i,predict_columns]):
             weight_sum[prediction]+=weight[name]
         df.loc[i,'predict']=sorted(weight_sum.items(), key=lambda x: x[1], reverse=True)[0][0]
+    return df
+
+def soft_voting_sum(data):
+    df=data.copy()
+    for idx in range(len(df)):
+        prob_sum=defaultdict(int)
+        for i in range(len(files)):
+            prob_sum[df.loc[idx,f'predict{i}']]+=df.loc[idx,f'probability{i}']
+        df.loc[idx,'predict']=sorted(prob_sum.items(), key=lambda x: x[1], reverse=True)[0][0]
+    return df
+
+def soft_voting_avg(data):
+    df=data.copy()
+    for idx in range(len(df)):
+        word_cnt=defaultdict(int)
+        prob_sum=defaultdict(int)
+        prob_avg=defaultdict(int)
+        for i in range(len(files)):
+            word_cnt[df.loc[idx,f'predict{i}']]+=1
+            prob_sum[df.loc[idx,f'predict{i}']]+=df.loc[idx,f'probability{i}']
+        for key in word_cnt.keys():
+            prob_avg[key]=prob_sum[key]/word_cnt[key]
+        df.loc[idx,'predict']=sorted(prob_avg.items(), key=lambda x: x[1], reverse=True)[0][0]
     return df
 
 
