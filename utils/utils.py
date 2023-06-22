@@ -32,6 +32,8 @@ def get_folder_name(CFG):
     os.makedirs(save_path)
     os.makedirs(save_path + '/train')
     os.makedirs(save_path + '/test')
+    if 'extract' in CFG['CL']:
+        os.makedirs(save_path + '/prediction_train')
 
     return folder_name, save_path
 
