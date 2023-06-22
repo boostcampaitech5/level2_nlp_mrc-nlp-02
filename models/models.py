@@ -197,10 +197,14 @@ class AutoModelForQuestionAnsweringAndMLM(nn.Module):
         )
 
 
-class AutoModelForQuestionAnsweringAndCustomLoss(AutoModelForQuestionAnswering):
+class AutoModelForQuestionAnsweringAndCustomLoss(nn.Module):
     def __init__(self, config, CFG):
-        super().__init__(config)
-        self.init_weights()
+        super(AutoModelForQuestionAnsweringAndCustomLoss, self).__init__()
+        self.config = config
+        self.CFG = CFG
+
+        self.PLM = AutoModel.from_pretrained(CFG['model']['model_name'])
+        self.qa_outputs = nn.Linear(self.config.hidden_size, 2)
 
     def forward(
         self,
@@ -216,9 +220,10 @@ class AutoModelForQuestionAnsweringAndCustomLoss(AutoModelForQuestionAnswering):
         output_hidden_states=None,
         return_dict=None,
     ):
+        device = torch.device("cuda")
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        outputs = self.roberta(
+        outputs = self.PLM(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
@@ -254,6 +259,8 @@ class AutoModelForQuestionAnsweringAndCustomLoss(AutoModelForQuestionAnswering):
             # p 구하기
             start_soft = F.softmax(start_logits, dim=1)
             end_soft = F.softmax(end_logits, dim=1)
+            start_soft = torch.gather(start_soft, 1, start_positions.unsqueeze(axis=-1))
+            end_soft = torch.gather(end_soft, 1, end_positions.unsqueeze(axis=-1))
             # weight 구하기
             start_weight = torch.pow(1.0 - start_soft, gamma)
             end_weight = torch.pow(1.0 - end_soft, gamma)
@@ -269,6 +276,9 @@ class AutoModelForQuestionAnsweringAndCustomLoss(AutoModelForQuestionAnswering):
                 end_alpha.append(alpha if end_same[i] else 1 - alpha)
             start_alpha = torch.tensor(start_alpha)
             end_alpha = torch.tensor(end_alpha)
+            # 데이터를 동일한 device에 올리기
+            start_alpha = start_alpha.to(device)
+            end_alpha = end_alpha.to(device)
             # focal loss 구하기
             start_focal_losses = -(start_alpha * start_weight * torch.log(start_soft))
             end_focal_losses =  -(end_alpha * end_weight * torch.log(end_soft))
