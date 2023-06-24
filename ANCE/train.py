@@ -161,15 +161,63 @@ def generate_nagatives(model, texts):
     
     pass
 
-def generate_nagative_ids(new_p_embs, new_q_embs, new_p_embs_ids, I):
-    neg_data_idxes = []
+# 기존 gold passage는 아닌 negative를 선택해야 한다.
+def generate_nagative_ids(new_p_embs, new_q_embs, new_p_embs_ids, new_q_embs_ids, I):
+    query_negative_passage = {}
+    gold_passages = ?   # {query id: gold id1, gold id2, ... }
     
-    return neg_data_idxes
+    # I 로부터 top K개 negatives 추출
+    for query_idx in range(I.shape[0]):
+        query_id = new_q_embs_ids[query_idx]
+
+        # 추출한 negs는 기존 gold가 아닌 경우에만 ~
+        positive_pid = gold_passages[query_id]
+        selected_ann_idx = I[query_id, :topK + alpha]    # 예비용 alpha 개
+        
+    # append
+    query_negative_passage[query_idx] = []
+    neg_cnt = 0
+    for idx in selected_ann_idx:
+        neg_pid = new_p_embs_ids[idx]
+        
+        if neg_pid in gold_passages[idx]:
+            continue
+        if neg_cnt >= args.negative_samples:
+            break
+        
+        query_negative_passage[query_idx].append(neg_pid)
+        neg_cnt += 1    
+    
+    return query_negative_passage # {query_id: nag_ids_1, neg_ids_2, ...}
 
 
+# 미완성, 형태만 잡아둔다.
 def make_next_dataset(quries, passages, neg_ids):
     
-    pass
+    # ANCE에서는 {}{}{} 이 triplet으로 어떻게 데이터세트로 만들ㅇ었지?
+    # 막 tensordataset으로 뭘 하던데... 그냥 split해서 읽어들인거 int형태로 바꾸고 tensor dataset으로 반환한다.
+    
+    # 텐서화.. 으음. 클래스화 해서 ANCE는 아예 custom dataset을 만들었구나.
+    query_data = get_tokenized
+    pos_data = get_tokenized
+    neg_data = get_tokenized
+    
+    
+    return TensorDataset(query_data[0], query_data[1], query_data[2], pos_data[0], pos_data[1], pos_data[2],
+            neg_data[0], neg_data[1], neg_data[2]) # qid, pos_pid, and neg_pid are not needed. 
+
+
+def get_tokenized(something_input):
+    
+    embed = args.tokenizer(something_input, return_tensors=='pt', ...)
+    
+    input_ids = embed['input_ids']
+    attention_masks = 
+    token_type_ids = 
+    query_to_id = idx
+    
+    # 그냥 (, , , )으로 리턴하는 것과 무슨 차이가 있을까?
+    return TensorDataset(intput_ids, attention_masks, token_type_ids, query_to_id)
 
 
 def train():
