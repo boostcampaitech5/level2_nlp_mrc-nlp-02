@@ -489,7 +489,6 @@ class DenseColBERT(BaseRetrieval):
             
         return dot_prod_scores[:,:k].tolist(), rank[:,:k].tolist()
 
-      
 class DenseRetrieval(BaseRetrieval):
     def __init__(
         self,
@@ -511,7 +510,7 @@ class DenseRetrieval(BaseRetrieval):
             per_device_eval_batch_size=8,
             # per_device_train_batch_size=6,
             # per_device_eval_batch_size=6,
-            num_train_epochs=20,
+            num_train_epochs=80,
             weight_decay=0.01,
             gradient_accumulation_steps=16,
             # gradient_accumulation_steps=21,
@@ -530,15 +529,18 @@ class DenseRetrieval(BaseRetrieval):
         ### pretrain with external dataset: Korquad, AIhub, etc.
         if CFG['model']['pretrain']:
             aug_df_name = CFG['model']['pretrain']
-            aug_df = pd.read_csv('/opt/ml/input/data/' + aug_df_name)
+            try:    aug_df = pd.read_csv('/opt/ml/input/data/' + aug_df_name)
+            except: aug_df = pd.read_csv(aug_df_name)
             
             try:    aug_df.drop(['Unnamed: 0'], axis = 1, inplace = True)
             except: pass
             aug_df['id'] = aug_df['id'].apply(lambda x:str(x))
             aug_df['answers'] = aug_df['answers'].apply(eval)
-            aug_df['context_length'] = aug_df['context'].apply(len)
-            aug_df = aug_df.sort_values('context_length', ascending=False)
-            aug_df = aug_df.head(51000)
+            # aug_df['context_length'] = aug_df['context'].apply(len)
+            # aug_df = aug_df.sort_values('context_length', ascending=False)
+            # aug_df = aug_df.head(51000)
+            # aug 샘플의 모든 것을 사용하기
+            aug_df = aug_df.sample(frac=1, random_state=CFG['seed'])
             
             self.pretrain_dataset = Dataset.from_pandas(aug_df)
             
@@ -828,7 +830,9 @@ class DenseRetrieval(BaseRetrieval):
             Dense Embedding을 pickle로 저장합니다.
             만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
         """
-        pickle_head_name = "0622_02_DR_inbatch_B" + str(self.args.train_batch_size)
+        # 만약 pretrained 만을 불러오고 싶다면... else 부분의 첫 부분을 건너뛰어야한다.
+        
+        pickle_head_name = "0625(Allaug)_DR_inbatch_B" + str(self.args.train_batch_size)
         
         p_pickle_name = "p_" + pickle_head_name + ".pth"
         q_pickle_name = "q_" + pickle_head_name + ".pth"
@@ -842,6 +846,8 @@ class DenseRetrieval(BaseRetrieval):
             print("Embedding model load.")
         
         else:
+            # i want to skip pre training
+            
             print("\nEmbeddings are not detected!! Prepare Negatives in batch...")
             print(f"Training with this data:\n{self.dataset}\n")
             # self.prepare_negative(self.dataset, self.num_neg, self.tokenizer, add_bm25=True)
@@ -857,7 +863,7 @@ class DenseRetrieval(BaseRetrieval):
                     learning_rate=1e-5,
                     per_device_train_batch_size=28,
                     per_device_eval_batch_size=28,
-                    num_train_epochs=3,
+                    num_train_epochs=20,
                     weight_decay=0.01,
                     gradient_accumulation_steps=5,
                     warmup_steps=150,
@@ -866,15 +872,40 @@ class DenseRetrieval(BaseRetrieval):
                 
                 self.in_batch_train(dataset=self.pretrain_dataset, args=pretrain_args, CFG=self.CFG, add_bm25=False)
                 
-                p_pre = "p_pre_0622_02_PB3_" + pickle_head_name + ".pth"
-                q_pre = "q_pre_0622_02_PB3_" + pickle_head_name + ".pth"
+                p_pre = "p_pre_0624(Allaug)_PE20_" + pickle_head_name + ".pth"
+                q_pre = "q_pre_0624(Allaug)_PE20_" + pickle_head_name + ".pth"
                 p_pre_path = os.path.join(self.data_path, p_pre)
                 q_pre_path = os.path.join(self.data_path, q_pre)
                 
                 torch.save(self.p_encoder.state_dict(), p_pre_path)
                 torch.save(self.q_encoder.state_dict(), q_pre_path)
                 print(f"Pretraining is done ! Pretrained model is saved.")
-                
+            
+            # pretrainning 만 불러오고, train_data 에 대해서 다시 학습하기 위한 변형
+            
+            # ############
+            # print(f"now start to load pretrained p and q encoder ...")
+            # pickle_head_name = "0624(Allaug)_DR_inbatch_B" + str(self.args.train_batch_size)
+
+            # p_pre = "p_pre_0624(Allaug)_PE20_" + pickle_head_name + ".pth"
+            # q_pre = "q_pre_0624(Allaug)_PE20_" + pickle_head_name + ".pth"
+            
+            # folder_name = "pre_augv1(ALL)_PE20_(prebatch28)"
+            
+            # # p_pickle_name = "p_" + pickle_head_name + ".pth"
+            # # q_pickle_name = "q_" + pickle_head_name + ".pth"
+            
+            # p_pre_path = os.path.join(self.data_path, folder_name, p_pre)
+            # q_pre_path = os.path.join(self.data_path, folder_name, q_pre)
+            # print(f"loading pretrained enc file is: {p_pre_path}")
+            
+            # self.p_encoder.load_state_dict(torch.load(p_pre_path))
+            # self.q_encoder.load_state_dict(torch.load(q_pre_path))
+            
+            # print(f"0624 all aug pretrained state dict loaded successfully!! ")
+            # print(f"now start to train with train_data set")
+            
+            # ############
             # way 2.
             self.in_batch_train(dataset=self.dataset, args=self.args, CFG=self.CFG, add_bm25=True)   # now, train with org self.dataset
             print("training done")
