@@ -10,6 +10,7 @@ Note: See more details in
 """
 import os
 import faiss
+import wandb
 import torch
 import numpy as np
 import torch.nn.functional as F
@@ -24,7 +25,38 @@ from transformers import (
     RobertaPreTrainedModel,
     RobertaForSequenceClassification,
     RobertaModel,
+    AdamW, get_linear_schedule_with_warmup,
+    TrainingArguments,
 )
+
+def getattr_recursive(obj, name):
+    for layer in name.split("."):
+        if hasattr(obj, layer): # judge whether obj exist attr (layer)
+            obj = getattr(obj, layer) # get the value of layer
+        else:
+            return None
+    return obj
+
+def optimizer_group(model):
+    optimizer_grouped_parameters = []
+    layer_optim_params = set()
+    
+    for layer_name in ["roberta.embeddings", "score_out", "downsample1", "downsample2", "downsample3"]:
+        layer = getattr_recursive(model, layer_name)
+        if layer is not None:
+            optimizer_grouped_parameters.append({"params": layer.parameters()}) # [{"params": layer.parameters()}, ...]
+            for p in layer.parameters():
+                layer_optim_params.add(p)
+                
+    if getattr_recursive(model, "roberta.encoder.layer") is not None:
+        for layer in model.roberta.encoder.layer:
+            optimizer_grouped_parameters.append({"params": layer.parameters()})
+            for p in layer.parameters():
+                layer_optim_params.add(p)
+                
+    optimizer_grouped_parameters.append({"params": [p for p in model.parameters() if p not in layer_optim_params]})
+    
+    return optimizer_grouped_parameters
 
 
 class EmbeddingMixin:
@@ -85,9 +117,12 @@ class NLL(EmbeddingMixin):
         b_embs = self.body_emb(input_ids_b, attention_mask_b)
 
         # nll loss
+        # breakpoint()
         logit_matrix = torch.cat([(q_embs * a_embs).sum(-1).unsqueeze(1), (q_embs * b_embs).sum(-1).unsqueeze(1)], dim=1)  # [B, 2]
         lsm = F.log_softmax(logit_matrix, dim=1) # apply in the dim=1 
-        loss = -1.0 * lsm[:, 0]
+        # loss = -1.0 * lsm[:, 0]
+        targets = torch.zeros(q_embs.size(0)).long().to('cuda:0')
+        loss = F.nll_loss(lsm, targets)
         return (loss.mean(),)
 
 class RobertaDot_NLL_LN(NLL, RobertaForSequenceClassification):
@@ -112,35 +147,36 @@ class RobertaDot_NLL_LN(NLL, RobertaForSequenceClassification):
         return self.query_emb(input_ids, attention_mask)
     
 
-def update_new_embedding(model, input, is_query_inference=True):
+def update_new_embedding(args, model, input, tokenizer, is_query_inference=True):
     embedding, embedding2id = [], []
     
     # 토크나이징
     input_tok = tokenizer(input, padding="max_length", truncation=True, return_tensors='pt')
-    input_idx = torch.tensor([idx for idx, _ in enumerate(input)])
+    input_idx = torch.tensor([idx for idx, _ in enumerate(input)])  # input 위치 기억
 
     # dataloader 생성
     dataset = TensorDataset(
         input_tok['input_ids'], input_tok['attention_mask'], input_tok['token_type_ids'],   # (전체, max_len)
         input_idx   # (전체, 1)
     )
-    dataloader = DataLoader(dataset, batch_size=args.batch_size)
+    dataloader = DataLoader(dataset, batch_size=256)
     
     # batch 기준으로 임베딩 계산
     model.eval()
 
-    for batch in tqdm(dataloader, desc="Inferencing", position=0, leave=True):
+    for batch in tqdm(dataloader, desc="embedding updating...", position=0, leave=True):
         # batch: all_input_ids_a, all_attention_mask_a, all_token_type_ids_a, query2id_tensor [index of dataset]
         idxs = batch[3].detach().numpy()  # [#B]
         batch = tuple(t.to(args.device) for t in batch)
-
-        # fp16도 나중에 추가하자..
+        
         with torch.no_grad():
             inputs = {"input_ids": batch[0].long(), "attention_mask": batch[1].long()}
-            if is_query_inference:
-                embs = model.module.query_emb(**inputs) # query1 = self.norm(self.embeddingHead(full_emb)) # linear layer, following layerNorm
-            else:
-                embs = model.module.body_emb(**inputs)  # 어떤 것이던, (B, H) 형태.
+            if args.fp16:
+                with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
+                    if is_query_inference:
+                        embs = model.query_emb(**inputs) # query1 = self.norm(self.embeddingHead(full_emb)) # linear layer, following layerNorm
+                    else:
+                        embs = model.body_emb(**inputs)  # 어떤 것이던, (B, H) 형태.
 
         embs = embs.detach().cpu().numpy() # detach: avoid gradient backward anymore
         # check for multi chunk output for long sequence
@@ -162,105 +198,140 @@ def generate_nagatives(model, texts):
     pass
 
 # 기존 gold passage는 아닌 negative를 선택해야 한다.
-def generate_nagative_ids(new_p_embs, new_q_embs, new_p_embs_ids, new_q_embs_ids, I):
+def generate_nagative_ids(args, new_p_embs_ids, new_q_embs_ids, positive_passage, I):
+    """
+    Note:
+        faiss search로 찾아낸 가까운 임베딩 I로부터 negative sample을 뽑아냅니다.
+        
+    Arguments:
+        - new_p_embs_ids: 새로이 업데이트 된 passages들의 id
+        - new_q_embs_ids: 새로이 업데이트 된 queries들의 id
+        
+    Return:
+        - 
+    """
     query_negative_passage = {}
-    gold_passages = ?   # {query id: gold id1, gold id2, ... }
+    gold_passages = positive_passage   # {query id: gold id1, gold id2, ... }
     
     # I 로부터 top K개 negatives 추출
     for query_idx in range(I.shape[0]):
         query_id = new_q_embs_ids[query_idx]
 
         # 추출한 negs는 기존 gold가 아닌 경우에만 ~
-        positive_pid = gold_passages[query_id]
-        selected_ann_idx = I[query_id, :topK + alpha]    # 예비용 alpha 개
+        positive_pid = new_p_embs_ids[query_id]
+        selected_ann_idx = I[query_id, :args.select_topK + args.select_alpha]    # 예비용 alpha 개
         
-    # append
-    query_negative_passage[query_idx] = []
-    neg_cnt = 0
-    for idx in selected_ann_idx:
-        neg_pid = new_p_embs_ids[idx]
-        
-        if neg_pid in gold_passages[idx]:
-            continue
-        if neg_cnt >= args.negative_samples:
-            break
-        
-        query_negative_passage[query_idx].append(neg_pid)
-        neg_cnt += 1    
+        # append
+        query_negative_passage[query_idx] = []
+        neg_cnt = 0
+        for idx in selected_ann_idx:
+            neg_pid = new_p_embs_ids[idx]
+            
+            if neg_pid == positive_pid:
+                continue
+            if neg_cnt >= args.negative_samples:
+                break
+            
+            query_negative_passage[query_idx].append(neg_pid)
+            neg_cnt += 1    
     
     return query_negative_passage # {query_id: nag_ids_1, neg_ids_2, ...}
 
 
-# 미완성, 형태만 잡아둔다.
-def make_next_dataset(quries, passages, neg_ids):
+def make_next_dataset(tokenizer, queries, passages, neg_ids):
+    """
+    Note:   다음으로 학습에 사용될 Dataset을 생성합니다. 토크나이징 - 데이터세트 생성 과정을 거칩니다.
     
+    Arguments:
+        - queries
+        - passages
+        - neg_ids
+    
+    return:
+    """
     # ANCE에서는 {}{}{} 이 triplet으로 어떻게 데이터세트로 만들ㅇ었지?
     # 막 tensordataset으로 뭘 하던데... 그냥 split해서 읽어들인거 int형태로 바꾸고 tensor dataset으로 반환한다.
     
     # 텐서화.. 으음. 클래스화 해서 ANCE는 아예 custom dataset을 만들었구나.
-    query_data = get_tokenized
-    pos_data = get_tokenized
-    neg_data = get_tokenized
+    neg_passages = [passages[ids] for ids in neg_ids]
     
-    
-    return TensorDataset(query_data[0], query_data[1], query_data[2], pos_data[0], pos_data[1], pos_data[2],
-            neg_data[0], neg_data[1], neg_data[2]) # qid, pos_pid, and neg_pid are not needed. 
+    query_data = get_tokenized(tokenizer, queries)
+    pos_data = get_tokenized(tokenizer, passages)
+    neg_data = get_tokenized(tokenizer, neg_passages)
+
+    return TensorDataset(query_data[0], query_data[1], query_data[2],
+                         pos_data[0], pos_data[1], pos_data[2],
+                         neg_data[0], neg_data[1], neg_data[2]) # qid, pos_pid, and neg_pid are not needed. 
 
 
-def get_tokenized(something_input):
-    
-    embed = args.tokenizer(something_input, return_tensors=='pt', ...)
+def get_tokenized(tokenizer, input):
+    embed = tokenizer(input, padding="max_length", truncation=True, return_tensors='pt')
     
     input_ids = embed['input_ids']
-    attention_masks = 
-    token_type_ids = 
-    query_to_id = idx
+    attention_masks = embed['attention_mask']
+    token_type_ids = embed['token_type_ids']
+    input_to_id = torch.tensor([idx for idx, _ in enumerate(input)])  # input 위치 기억
     
     # 그냥 (, , , )으로 리턴하는 것과 무슨 차이가 있을까?
-    return TensorDataset(intput_ids, attention_masks, token_type_ids, query_to_id)
+    # return TensorDataset(input_ids, attention_masks, token_type_ids, input_to_id)
+    return (input_ids, attention_masks, token_type_ids, input_to_id)
 
+def train(args, CFG, model, tokenizer, train_data):
+    # setup
+    train_passages = train_data['context']
+    train_queries = train_data['question']
+    _name = CFG['실험명']
+    
+    wandb.init(name=_name+'_ance_training', project=CFG['wandb']['project'], 
+               entity=CFG['wandb']['id'])
+    
+    # for saving
+    output_dir = "./ance_pretrained/"
+    
+    # optimizer, scheduler
 
-def train():
-    ## 1. batch
-    while global_step < args.max_steps:
+    optimizer_grouped_parameters = optimizer_group(model)
+    optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
+    t_total = len(train_data) // args.gradient_accumulation_steps * args.num_train_epochs
+    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total)
+
+    if args.fp16:
+        scaler = torch.cuda.amp.GradScaler(enabled=True)
+    
+    # training start!
+    model.zero_grad()
+    step, global_step = 0, 0
+    _max_step = len(train_data)//args.per_device_train_batch_size//args.gradient_accumulation_steps * args.num_train_epochs
+    _update_step = len(train_data)//args.per_device_train_batch_size
+    print(f"total step: {_max_step}, update step: {_update_step}")
+    # while global_step < args.max_steps:
+    while global_step < 3:
         
         # if some steps
-        if global_step % args.gradient_accumulation_steps == 0:
+        # if step % args.gradient_accumulation_steps == 0:
+        if step % 10 == 0:
             # update p, q embeddings
             # p, q = (len(train), ) -> new_p_embs (len(train), S, H), new_p_embs_ids (len(train))
-            new_p_embs, new_p_embs_ids = update_new_embedding(ANCE_model, train_passages, is_query_inference=False)
-            new_q_embs, new_q_embs_ids = update_new_embedding(ANCE_model, train_queries)
-            
+            new_p_embs, new_p_embs_ids = update_new_embedding(args, model, train_passages, tokenizer, is_query_inference=False)
+            new_q_embs, new_q_embs_ids = update_new_embedding(args, model, train_queries, tokenizer)
+
             # search best ann negs
             dim = new_p_embs.shape[1]   # H = hidden_dim = 768
             cpu_index = faiss.IndexFlatIP(dim)
             cpu_index.add(new_p_embs)
-            _, I = cpu_index.search(new_q_embs, args.top_k)
+            _, I = cpu_index.search(new_q_embs, args.select_topK)
             
             # generate new train_dataset
-            query_negative_passage_ids = generate_nagative_ids(new_p_embs, new_q_embs, new_p_embs_ids, I) # {'queryid': neg_id, ...}
+            query_negative_passage_ids = generate_nagative_ids(args, new_p_embs_ids, new_q_embs_ids, train_passages, I) # {'queryid': neg_id, ...}
             
-            next_train_dataset = make_next_dataset(train_queries, train_passages, query_negative_passage_ids)
+            next_train_dataset = make_next_dataset(tokenizer, train_queries, train_passages, query_negative_passage_ids)
             
-            """
-                query_negative_paassage = {}
-                for q in range(I.shape[0]):
-                    top_ann_pid = I[q, :args.negative_sample+1] # +1 for sure
-                    
-                    for idx in top_ann_pid:
-                        neg_cnt +=1
-                        neg_pid = new_p_embs_ids[idx]
-                        query_negative_pasage[new_pid].append()
-                        if neg_cnt >= args.negative_sample:
-                            break
-                return query_negative_passage
-            """
-            # next_train_dataset = f3(query_negative_passage)
-            train_dataloader = DataLoader(next_train_dataset)
+            train_dataloader = DataLoader(next_train_dataset, batch_size=args.per_device_train_batch_size)
             train_dataloader_iter = iter(train_dataloader)
-
             # maybe you can re warmup schedulers here, too.
-        
+        model.train()
+        # with tqdm(train_dataloader_iter, unit='batch') as tepoch:
+        #     for batch in tepoch:
         # new batch
         batch = next(train_dataloader_iter)
         
@@ -268,37 +339,50 @@ def train():
         step += 1
         
         # input
-        inputs = {"query_ids": batch[0].long(),   "attention_mask_q": batch[1].long(),
+        inputs = {"query_ids": batch[0].long(), "attention_mask_q": batch[1].long(),
                 "input_ids_a": batch[3].long(), "attention_mask_a": batch[4].long(),
                 "input_ids_b": batch[6].long(), "attention_mask_b": batch[7].long()}
         
         # output
-        ouput = ANCE_model(**inputs)   # (B, S, H)
+        if args.fp16:
+            with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
+                output = model(**inputs)   
         
         # loss
         loss = output[0]
         if args.gradient_accumulation_steps > 1:
             loss = loss / args.gradient_accumulation_steps
         
-        loss.backward()
-        
+        scaler.scale(loss).backward()
+        # tepoch.set_postfix(loss=f'{str(loss.item())}')
         if step % args.gradient_accumulation_steps == 0:
-            optimizer.step()
-            scheduler.step()  # Update learning rate schedule
+            scaler.step(optimizer)
+            scheduler.step()    # Update learning rate schedule
+            scaler.update()
+
             model.zero_grad()
+            model.train()
+            torch.cuda.empty_cache()
+            
             global_step += 1
+            print(f"loss: {loss}")
+            wandb.log({"train/loss": loss, # "train/learning_rate": args.learning_rate})
+                        "train/learning_rate": optimizer.param_groups[0]['lr']})
 
             # maybe eval here
             
-            if global_step % args.save_steps == 0:
-                # save checkpoint
-                model_to_save.save_pretrained(output_dir)
-                tokenizer.save_pretrained(output_dir)
+        if step % args.save_steps == 0:
+            # save checkpoint
+            model.save_pretrained(output_dir)
+            tokenizer.save_pretrained(output_dir)
 
-                torch.save(args, os.path.join(output_dir, "training_args.bin"))
-                torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
-                torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+            # torch.save(args, os.path.join(output_dir, "training_args.bin"))
+            # torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
+            # torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+            print(f"ance save checkpoint ...")
                 
+    wandb.finish()            
+    return model            
                 
 if __name__ == '__main__':
     model_name = 'klue/roberta-base'
