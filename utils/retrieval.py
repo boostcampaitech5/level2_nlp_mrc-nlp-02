@@ -20,6 +20,9 @@ from fuzzywuzzy import fuzz
 from rank_bm25 import BM25Okapi
 from colbert.model import *
 from colbert.tokenizer import *
+
+import ANCE.train
+
 from contextlib import contextmanager
 from typing import List, Optional, Tuple, Union
 from torch.utils.data import DataLoader, TensorDataset
@@ -811,6 +814,138 @@ class DenseRetrieval(BaseRetrieval):
         rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
         return dot_prod_scores[:k], rank[:k]
 
+
+class ANCERetrieval(BaseRetrieval):
+    def __init__(
+        self,
+        CFG,
+        training_args,
+        tokenize_fn,
+        data_path: Optional[str] = "/opt/ml/retrieval",
+        context_path: Optional[str] = "wikipedia_documents.json",
+    ) -> None:
+        super().__init__(CFG, training_args, tokenize_fn, data_path, context_path)
+        
+        self.ANCE_args = TrainingArguments(
+            output_dir="ANCE_training",
+            evaluation_strategy="epoch",
+            learning_rate=5e-6,
+            per_device_train_batch_size=20,
+            per_device_eval_batch_size=20,
+            num_train_epochs=40,
+            weight_decay=0.01,
+            gradient_accumulation_steps=6,
+            warmup_steps=50,
+            fp16=True,
+        )
+        
+        self.CFG = CFG
+        self.training_args = training_args
+        self.data_dir = "/opt/ml/input/data/train_dataset/"
+        self.dataset = load_from_disk(self.data_dir+"train")
+        self.valid_dataset = load_from_disk(self.data_dir+"validation")
+        
+        model_name = 'klue/roberta-base'
+        ANCE_config = AutoConfig.from_pretrained(model_name)
+        self.ance_model = ANCE.train.RobertaDot_NLL_LN(ANCE_config)
+        self.ance_tokenizer = AutoTokenizer.from_pretrained(model_name)
+            
+        wiki_seqs = self.ance_tokenizer(self.contexts, padding="max_length", truncation=True, return_tensors='pt')
+        passage_dataset = TensorDataset(
+            wiki_seqs['input_ids'], wiki_seqs['attention_mask'], wiki_seqs['token_type_ids']
+        )
+        self.passage_dataloader = DataLoader(passage_dataset, batch_size=256)
+        
+        print(f"ANCE class successfully initialized!")
+        pass
+    
+    def get_embedding(self) -> None:
+        """
+        Summary:
+            Encoder 모델을 불러옵니다. 불러올 encoder가 없다면, 새롭게 학습하고 저장합니다.
+        """
+        ## 모델 init(load, train, save)
+        
+        ance_pickle_name = "0626_02_ance_embedding" + f".pth"
+        ance_emb_path = os.path.join(self.data_path, ance_pickle_name)
+        
+        self.ance_model.to(self.ANCE_args.device)
+        
+        if os.path.isfile(ance_emb_path):
+            self.ance_model.load_state_dict(torch.load(ance_emb_path))
+
+            print("Embedding model load.")
+        
+        else:
+            print("\nEmbeddings are not detected!! Prepare Negatives in batch...")
+            print(f"Training with this data:\n{self.dataset}\n")
+            
+            self.ANCE_args.max_steps = 1
+            self.ANCE_args.select_topK = 100
+            self.ANCE_args.select_alpha = 10
+            self.ANCE_args.negative_samples = 1
+            self.ANCE_args.save_steps = 500
+            # 함수가 외부에 있을 뿐, self.model로 학습되고 저장되게 해야한다.
+            # 모델 학습
+            self.ance_model = ANCE.train.train(self.ANCE_args, self.CFG,
+                                               self.ance_model,
+                                               self.ance_tokenizer,
+                                               self.dataset,
+                                               )
+            
+            # 모델 저장
+            torch.save(self.ance_model.state_dict(), ance_emb_path)
+            print(f"ance model is saved!")
+            
+        # wiki 데이터에 대한 embedding을 미리 만들어두자.
+        with torch.no_grad():
+            self.ance_model.eval()
+
+            passage_embs = []
+            for batch in tqdm(self.passage_dataloader, desc='ANCE, 전체 문서에 대한 embedding 계산 중'):
+                batch = tuple(t.to(self.ANCE_args.device) for t in batch)
+                
+                passage_inputs = {
+                    'input_ids': batch[0],          # (B, max_len)
+                    'attention_mask': batch[1],
+                    # 'token_type_ids': batch[2]
+                }
+                if self.ANCE_args.fp16:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
+                        passage_emb = self.ance_model.body_emb(**passage_inputs).to('cpu')
+                passage_embs.append(passage_emb)    # [(batch, H), (batch, H), ... , (last_batch, H)]
+            
+            stacked = torch.cat(passage_embs, dim=0).to(self.ANCE_args.device)    # (num_passage=whole_corpus, emb_dim)
+        self.passage_embs = stacked
+    
+    def get_relevant_doc_bulk(self, queries, k):
+        """
+        Note:
+            전체 wiki 안에서 quries에 가장 relevant한 문서들의 유사도 점수와 idx를 topk 개 반환합니다.
+        Args:
+            queries:    유사한 문장을 확인하고 싶은 queries. List.
+            k:          topk 개
+        Return:
+            topk score(2d List), topk docs idx(2d List)
+        """
+        with torch.no_grad():
+            self.ance_model.eval()
+            
+            queries_tok = self.ance_tokenizer(queries, padding="max_length", truncation=True, return_tensors='pt').to(self.ANCE_args.device)
+            if self.ANCE_args.fp16:
+                with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
+                    queries_emb = self.ance_model.query_emb(queries_tok['input_ids'], queries_tok['attention_mask']).to(self.ANCE_args.device)  # (num_queries, H=768)
+            
+            # breakpoint()
+            # stacked = torch.stack(passage_embs, dim=0).view(len(self.passage_dataloader.dataset), -1).to(self.args.device)  # (num_passage, emb_dim)
+            # stacked = torch.cat(passage_embs, dim=0).to(self.args.device)    # (num_passage=whole_corpus, emb_dim)
+            dot_prod_scores = torch.matmul(queries_emb, torch.transpose(self.passage_embs, 0, 1))  # (num_queries, num_passage)
+            rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze() # (num_queries, num_passage)
+            top_k_docs_scores = torch.gather(dot_prod_scores, dim=1, index=rank)[:, :k]
+            top_k_docs_indices = rank[:, :k]
+        
+        return top_k_docs_scores, top_k_docs_indices
+
       
 class BertEncoder(BertPreTrainedModel):
 
@@ -836,3 +971,5 @@ class BertEncoder(BertPreTrainedModel):
         
         pooled_output = outputs[1]
         return pooled_output
+
+
