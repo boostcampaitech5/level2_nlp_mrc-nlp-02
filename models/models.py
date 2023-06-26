@@ -114,12 +114,15 @@ class AutoModelForQuestionAnsweringAndCNN(nn.Module):
             attentions=outputs.attentions,
         )
         
-class AutoModelForQuestionAnsweringAndMLM(AutoModelForQuestionAnswering):
-    def __init__(self, config):
-        super().__init__(config)
-        self.mlm_outputs = nn.Linear(config.hidden_size, config.vocab_size)
-        
-        self.init_weights()
+class AutoModelForQuestionAnsweringAndMLM(nn.Module):
+    def __init__(self, CFG, config):
+        super(AutoModelForQuestionAnsweringAndMLM, self).__init__()
+        self.config = config
+        self.CFG = CFG
+
+        self.PLM = AutoModel.from_pretrained(CFG['model']['model_name'])
+        self.qa_outputs = nn.Linear(self.config.hidden_size, 2)
+        self.mlm_outputs = nn.Linear(self.config.hidden_size, config.vocab_size)
 
     def forward(
         self,
@@ -138,7 +141,7 @@ class AutoModelForQuestionAnsweringAndMLM(AutoModelForQuestionAnswering):
     ):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        outputs = self.roberta(
+        outputs = self.PLM(
             input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
@@ -179,7 +182,7 @@ class AutoModelForQuestionAnsweringAndMLM(AutoModelForQuestionAnswering):
             mlm_loss_fct = CrossEntropyLoss(ignore_index=-100)
             prediction_scores = self.mlm_outputs(sequence_output)
             mlm_loss = mlm_loss_fct(prediction_scores.view(-1, self.config.vocab_size), masked_lm_labels.view(-1))
-            total_loss = total_loss + mlm_loss if total_loss is not None else mlm_loss
+            total_loss = total_loss + (mlm_loss * 0.5) if total_loss is not None else mlm_loss
 
         if not return_dict:
             output = (start_logits, end_logits) + outputs[2:]

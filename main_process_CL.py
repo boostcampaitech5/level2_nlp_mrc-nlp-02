@@ -24,8 +24,9 @@ from tqdm.auto import tqdm
 
 ### 우리가 만든 라이브러리 ###
 from utils import utils, data_controller, retriever_metric, retrieval
-from input.code.trainer_qa import QuestionAnsweringTrainer
+from input.code.trainer_qa import QuestionAnsweringTrainer_CL
 from input.code.utils_qa import postprocess_qa_predictions
+from input.code.evaluation import f1_score
 from models.models import *
 
 import warnings
@@ -118,8 +119,11 @@ if __name__ == "__main__":
         # train/valid 데이터셋 정의
         printer.start('train/valid 데이터셋 정의')
         if CFG['model']['pretrain']:
-            aug_df = pd.read_csv('/opt/ml/input/data/' + CFG['model']['pretrain'])
-            aug_df.drop(['Unnamed: 0'], axis = 1, inplace = True)
+            if 'train' in CFG['CL']:
+                aug_df = pd.read_csv(CFG['model']['pretrain'])
+            else:
+                aug_df = pd.read_csv('/opt/ml/input/data/' + CFG['model']['pretrain'])
+                aug_df.drop(['Unnamed: 0'], axis = 1, inplace = True)
             aug_df['id'] = aug_df['id'].apply(lambda x:str(x))
             aug_df['answers'] = aug_df['answers'].apply(eval)
             new_data = Dataset.from_pandas(aug_df)
@@ -164,10 +168,10 @@ if __name__ == "__main__":
         data_collator = DataCollatorWithPadding(
             tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
         )
-
+        # breakpoint()
         # Trainer 초기화
         printer.start("Trainer 초기화")
-        trainer = QuestionAnsweringTrainer(
+        trainer = QuestionAnsweringTrainer_CL(
             model=model,
             args=training_args,
             train_dataset=train_data,
@@ -178,11 +182,13 @@ if __name__ == "__main__":
             post_process_function=post_processing_function,
             compute_metrics=utils.compute_metrics,
         )
+        # breakpoint()
         printer.done()
 
         # Training
         printer.start("학습중...")
         train_result = trainer.train()
+        # breakpoint()
         trainer.save_model()
         printer.done()
         printer.start("모델 및 metrics 저장")
@@ -220,7 +226,7 @@ if __name__ == "__main__":
             tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
         )
         printer.start("Trainer 초기화")
-        trainer = QuestionAnsweringTrainer(
+        trainer = QuestionAnsweringTrainer_CL(
             model=model,
             args=training_args,
             tokenizer=tokenizer,
@@ -233,8 +239,17 @@ if __name__ == "__main__":
     # predict 단계
     training_args.do_eval = False
     training_args.do_predict = True
-    training_args.output_dir = save_path + '/test'
-    test_dataset = load_from_disk('input/data/test_dataset')
+    
+
+    if 'extract' in CFG['CL']:
+        training_args.output_dir = save_path + '/prediction_train'
+        test_dataset = train_dataset['train']
+        print('prediction with train dataset for Curiculum learning')
+        print(test_dataset)
+    else:
+        training_args.output_dir = save_path + '/test'
+        test_dataset = load_from_disk('input/data/test_dataset')
+    printer.done()
     
     # retrieval 단계
     print(f"Retriever class: retrieval.{CFG['retrieval_list'][CFG['retrieval_name']]}")
@@ -243,7 +258,11 @@ if __name__ == "__main__":
     retriever.get_embedding()
 
     printer.start("top-k 추출하기")
-    df = retriever.retrieve(test_dataset['validation'], topk=CFG['option']['top_k_retrieval'])
+
+    if 'extract' in CFG['CL']:
+        df = retriever.retrieve(test_dataset, topk=CFG['option']['top_k_retrieval'])
+    else:
+        df = retriever.retrieve(test_dataset['validation'], topk=CFG['option']['top_k_retrieval'])
     printer.done()
 
     # retriever 성능 비교하기 - 현재 valid 데이터에 대해서만 평가. train에 대해서 진행하고 싶다면 주석을 풀어주세요.
@@ -271,18 +290,38 @@ if __name__ == "__main__":
         printer.done()
         
     printer.start("context가 추가된 test dataset 선언")
-    f = Features(
-            {
-                "context": Value(dtype="string", id=None),
-                "id": Value(dtype="string", id=None),
-                "question": Value(dtype="string", id=None),
-            }
-        )
-    test_dataset = DatasetDict({"validation": Dataset.from_pandas(df, features=f)})
+    # breakpoint()
+    # if CFG['CL'] == 'extract':
+    #     f = Features(
+    #             {
+    #                 "title": Value(dtype="string", id=None),
+    #                 "context": Value(dtype="string", id=None),
+    #                 "question": Value(dtype="string", id=None),
+    #                 "id": Value(dtype="string", id=None),
+    #                 "answers": Value(dtype="string", id=None),
+    #                 "document_id": Value(dtype="string", id=None),
+    #                 "__index_level_0__": Value(dtype="string", id=None),
+    #             }
+    #         )
+    # else:
+    #     f = Features(
+    #             {
+    #                 "context": Value(dtype="string", id=None),
+    #                 "id": Value(dtype="string", id=None),
+    #                 "question": Value(dtype="string", id=None),
+    #             }
+    #         )
+    # breakpoint()
+    # test_dataset = DatasetDict({"validation": Dataset.from_pandas(df, features=f)})
+    # breakpoint()
+    test_dataset = DatasetDict({"validation": Dataset.from_pandas(df)})
+
     printer.done()
 
     # reader 단계
+
     test_data = test_dataset['validation']
+    
     printer.start("test 토크나이징")
     fn_kwargs['column_names']= test_data.column_names
     test_data = test_data.map(
@@ -300,4 +339,64 @@ if __name__ == "__main__":
         test_examples=test_dataset['validation']
     )
     printer.done()
+    
+    if 'extract' in CFG['CL']:
+        
+        printer.start("f1 계산 중...")
+        df_CL = load_from_disk("input/data/train_dataset")
+        df_CL = pd.DataFrame( df_CL['train'] )
+        # display(df_CL.head(2))
+        print('df_CL: ',len(df_CL))
+        pred = pd.DataFrame(predictions)
+        # display(pred.head(2))
+        print('pred: ',len(pred))
+        df_CL = pd.merge(left = df_CL , right = pred, how = "inner", on = "id")
+        # display(df_CL.head(2))
+        print('df_CL: ',len(df_CL))
+        
+        def f1_result(x):
+            gt = x[0]['text'][0]
+            p = x[1]
+            # print(gt,p, exact_match_score(p,gt))
+            # print(gt,p, f1_score(p,gt))
+            return f1_score(p,gt)
+        printer.done()
+        df_CL['f1'] = df_CL[['answers','prediction_text' ]].apply(f1_result, axis = 1)
+        printer.start("f1 기준으로 sorting...")
+        if '-N' in CFG['CL']:
+            # breakpoint()
+            # 10개 랜덤으로 뽑은 후, 각 데이터셋마다 f1 계산한다.
+            # 각 데이터셋은 섞어 주기로 한다.
+            k = len(df_CL)//10
+            
+            if 'random' in CFG['CL']:
+                df_tmp = []
+                for _ in range(10):
+                    df_ = df_CL.sample(k,random_state=42)
+                    df_tmp.append(df_)
+                    df_CL = pd.merge(df_CL, df_, how='outer', indicator=True).query("_merge=='left_only'").drop(columns=['_merge'])
+            else:
+                df_tmp = [df_CL.loc[i:i+k-1, :] for i in range(0, len(df_CL), k)][:-1]  # 10개만 숫자 맞춰서 뽑는다.
+            print(len(df_tmp))
+            print([len(df_tmp[i]) for i in range(len(df_tmp))])
+
+            # 각 데이터셋마다 f1 계산한 후, f1_list = [(ids, f1), (ids, f1), ..]
+            f1_list = [(i,sum(list(df['f1']))/k) for i,df in enumerate(df_tmp)]
+            print(f1_list)
+            f1_list = sorted(f1_list, key=lambda x: x[1], reverse=True)
+
+            df_CL = pd.DataFrame()
+            for i,f1 in f1_list:
+                df_suffle = df_tmp[i].sample(frac=1).reset_index(drop=True)
+                df_CL = pd.concat([df_CL,df_suffle])
+
+            df_CL = df_CL.reset_index(drop=True)
+        else:
+            
+            df_CL = df_CL.sort_values(by =['f1'])
+        df_CL = df_CL.drop(columns = ['prediction_text','f1'])
+        df_CL.to_csv(save_path+'/prediction_train/train_mrc.csv', sep=',', na_rep='NaN',index=False)
+        printer.done()
+
+    
     print("main_process 끝 ^_^")

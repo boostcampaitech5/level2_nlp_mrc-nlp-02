@@ -1,7 +1,9 @@
 import os
 import evaluate
+import torch
 
 from datetime import datetime, timezone, timedelta
+from transformers import DataCollatorWithPadding
 
 
 class Printer():
@@ -30,6 +32,8 @@ def get_folder_name(CFG):
     os.makedirs(save_path)
     os.makedirs(save_path + '/train')
     os.makedirs(save_path + '/test')
+    if 'extract' in CFG['CL']:
+        os.makedirs(save_path + '/prediction_train')
 
     return folder_name, save_path
 
@@ -37,3 +41,16 @@ def compute_metrics(p):
     metric = evaluate.load("squad")
     
     return metric.compute(predictions=p.predictions, references=p.label_ids)
+
+class NewDataCollator(DataCollatorWithPadding):
+    def __init__(self, tokenizer, pad_to_multiple_of=None):
+        super().__init__(tokenizer, pad_to_multiple_of)
+
+    def __call__(self, features):
+        batch = super().__call__(features)
+
+        if "masked_lm_labels" in batch:
+             batch["masked_lm_labels"] = [torch.tensor(label, dtype=torch.long) for label in batch["masked_lm_labels"]]
+
+
+        return batch

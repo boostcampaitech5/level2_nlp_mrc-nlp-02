@@ -13,9 +13,11 @@ force_inference.py
 add_noun_adj.ipynb
 back-question.ipynb
 retrieval/*
+wandb/
 !colbert/*.py
 colbert
 col_eval.sh
+*.bin
 nltk_data/*
 wandb/*
 

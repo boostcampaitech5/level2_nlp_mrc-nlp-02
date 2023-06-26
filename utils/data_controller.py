@@ -20,6 +20,7 @@ def train_tokenizing(examples, tokenizer, pad_on_right, CFG, column_names):
         padding="max_length" if CFG['tokenizer']['pad_to_max_length'] else False,
     )
     if CFG['model']['option'] == 'question_masking':
+        tokenized_examples["masked_lm_labels"] = []
         for idx in range(len(tokenized_examples["input_ids"])):
             # Create a probability matrix with the same length as the current input_ids
             probability_matrix = torch.full((len(tokenized_examples["input_ids"][idx]), ), 0.15)
@@ -41,10 +42,12 @@ def train_tokenizing(examples, tokenizer, pad_on_right, CFG, column_names):
             masked_input_ids = np.where(masked_indices, tokenizer.convert_tokens_to_ids(tokenizer.mask_token), tokenized_examples["input_ids"][idx])
             labels = np.where(~masked_indices, -100, tokenized_examples["input_ids"][idx])
             tokenized_examples["input_ids"][idx] = masked_input_ids.tolist()
-            if idx == 0:
-                tokenized_examples["masked_lm_labels"] = [labels.tolist()]
-            else:
-                tokenized_examples["masked_lm_labels"].append(labels.tolist())
+            # Ensure labels are of the same length as input_ids
+            labels_padded = [-100] * len(tokenized_examples["input_ids"][idx])
+            labels_padded[:len(labels)] = labels.tolist()
+
+            tokenized_examples["masked_lm_labels"].append(labels_padded)
+            
 
     # 길이가 긴 context가 등장할 경우 truncate를 진행해야하므로, 해당 데이터셋을 찾을 수 있도록 mapping 가능한 값이 필요합니다.
     sample_mapping = tokenized_examples.pop("overflow_to_sample_mapping")
