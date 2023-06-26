@@ -1,13 +1,11 @@
 """
-
 Note: See more details in
     - https://github.com/juyongjiang/Awesome-ANCE/blob/6ec62eae20950d1c9c6bc5714483f9163935d3c9/inferencer.py#L42
     - https://github.com/juyongjiang/Awesome-ANCE/blob/master/models.py#L78
     - https://github.com/huggingface/transformers/blob/v4.30.0/src/transformers/models/roberta/modeling_roberta.py#L1173
     - https://github.com/huggingface/transformers/blob/v4.30.0/src/transformers/modeling_outputs.py#L196
-        
-
 """
+
 import os
 import faiss
 import wandb
@@ -22,12 +20,9 @@ from torch.utils.data import Dataset, TensorDataset, DataLoader
 from transformers import (
     AutoConfig,
     AutoTokenizer,
-    BertPreTrainedModel, 
-    RobertaPreTrainedModel,
     RobertaForSequenceClassification,
     RobertaModel,
     AdamW, get_linear_schedule_with_warmup,
-    TrainingArguments,
 )
 
 def getattr_recursive(obj, name):
@@ -126,6 +121,7 @@ class NLL(EmbeddingMixin):
         # loss = F.nll_loss(lsm, targets)
         return (loss.mean(),)
 
+
 class RobertaDot_NLL_LN(NLL, RobertaForSequenceClassification):
     """None
     Compress embedding to 200d, then computes NLL loss.
@@ -149,6 +145,9 @@ class RobertaDot_NLL_LN(NLL, RobertaForSequenceClassification):
     
 
 def update_new_embedding(args, model, input, tokenizer, is_query_inference=True):
+    """
+    Note: input에 대해 현재 model에서 input의 embedding을 업데이트 합니다.
+    """
     embedding, embedding2id = [], []
     
     # 토크나이징
@@ -194,9 +193,11 @@ def update_new_embedding(args, model, input, tokenizer, is_query_inference=True)
     
     return embedding, embedding2id
 
+
 def generate_nagatives(model, texts):
     
     pass
+
 
 # 기존 gold passage는 아닌 negative를 선택해야 한다.
 def generate_nagative_ids(args, new_p_embs_ids, new_q_embs_ids, positive_passage, I):
@@ -209,7 +210,7 @@ def generate_nagative_ids(args, new_p_embs_ids, new_q_embs_ids, positive_passage
         - new_q_embs_ids: 새로이 업데이트 된 queries들의 id
         
     Return:
-        - 
+        - query_negative_passage: Dict 형태로, query idx에 해당하는 negative ids를 반환
     """
     query_negative_passage = {}
     gold_passages = positive_passage   # {query id: gold id1, gold id2, ... }
@@ -255,12 +256,8 @@ def make_next_dataset(tokenizer, queries, passages, neg_ids):
     
     return:
     """
-    # ANCE에서는 {}{}{} 이 triplet으로 어떻게 데이터세트로 만들ㅇ었지?
-    # 막 tensordataset으로 뭘 하던데... 그냥 split해서 읽어들인거 int형태로 바꾸고 tensor dataset으로 반환한다.
-    
-    # 텐서화.. 으음. 클래스화 해서 ANCE는 아예 custom dataset을 만들었구나.
     neg_passages = [passages[ids[0]] for _, ids in neg_ids.items()]
-    breakpoint()
+    
     query_data = get_tokenized(tokenizer, queries)
     pos_data = get_tokenized(tokenizer, passages)
     neg_data = get_tokenized(tokenizer, neg_passages)
@@ -278,7 +275,6 @@ def get_tokenized(tokenizer, input):
     token_type_ids = embed['token_type_ids']
     input_to_id = torch.tensor([idx for idx, _ in enumerate(input)])  # input 위치 기억
     
-    # 그냥 (, , , )으로 리턴하는 것과 무슨 차이가 있을까?
     # return TensorDataset(input_ids, attention_masks, token_type_ids, input_to_id)
     return (input_ids, attention_masks, token_type_ids, input_to_id)
 
@@ -407,7 +403,8 @@ def train(args, CFG, model, tokenizer, train_data):
                 
     wandb.finish()
     return model
-                
+
+  
 if __name__ == '__main__':
     model_name = 'klue/roberta-base'
 
