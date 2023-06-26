@@ -521,6 +521,7 @@ class DenseColBERT(BaseRetrieval):
             
         return dot_prod_scores[:,:k].tolist(), rank[:,:k].tolist()
 
+
 class DenseRetrieval(BaseRetrieval):
     def __init__(
         self,
@@ -551,7 +552,6 @@ class DenseRetrieval(BaseRetrieval):
         )
         self.CFG = CFG
         self.training_args = training_args
-        # self.model_name = CFG['model']['model_name']
         self.model_name = 'klue/bert-base' # 'klue/roberta-base'
         self.data_dir = "/opt/ml/input/data/train_dataset/"
         self.dataset = load_from_disk(self.data_dir+"train")
@@ -571,6 +571,7 @@ class DenseRetrieval(BaseRetrieval):
             # aug_df['context_length'] = aug_df['context'].apply(len)
             # aug_df = aug_df.sort_values('context_length', ascending=False)
             # aug_df = aug_df.head(51000)
+            
             # aug 샘플의 모든 것을 사용하기
             aug_df = aug_df.sample(frac=1, random_state=CFG['seed'])
             
@@ -580,7 +581,6 @@ class DenseRetrieval(BaseRetrieval):
             print(self.pretrain_dataset, '\n')
 
         ###
-        
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         self.p_encoder = BertEncoder.from_pretrained(self.model_name).to(self.args.device)
         self.q_encoder = BertEncoder.from_pretrained(self.model_name).to(self.args.device)
@@ -691,7 +691,6 @@ class DenseRetrieval(BaseRetrieval):
                     
                     self.p_encoder.train()
                     self.q_encoder.train()
-
 
                     # input:(B, max_len)
                     p_inputs = {
@@ -821,7 +820,6 @@ class DenseRetrieval(BaseRetrieval):
                 # bm25_neg.append(not_gold_context[idx])            # (whole corpus, (1+num_neg+bm25_topk))
                 bm25_neg.extend(not_gold_context[idx])# 1차원 버전
             
-            
             # 4. bm25를 추가하면 self.num_neg가 두 배가 된다.
             # self.num_neg = self.num_neg + num_neg
             # num_neg = self.num_neg
@@ -878,8 +876,6 @@ class DenseRetrieval(BaseRetrieval):
             print("Embedding model load.")
         
         else:
-            # i want to skip pre training
-            
             print("\nEmbeddings are not detected!! Prepare Negatives in batch...")
             print(f"Training with this data:\n{self.dataset}\n")
             # self.prepare_negative(self.dataset, self.num_neg, self.tokenizer, add_bm25=True)
@@ -969,6 +965,7 @@ class DenseRetrieval(BaseRetrieval):
             
         self.passage_embs = stacked
 
+    # 기존 train 방식
     def train(self, args=None, CFG=None):
         _name = CFG['실험명']
         wandb.init(name=_name+'_dense_embedding', project=CFG['wandb']['project'], 
