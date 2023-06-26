@@ -117,12 +117,13 @@ class NLL(EmbeddingMixin):
         b_embs = self.body_emb(input_ids_b, attention_mask_b)
 
         # nll loss
-        # breakpoint()
         logit_matrix = torch.cat([(q_embs * a_embs).sum(-1).unsqueeze(1), (q_embs * b_embs).sum(-1).unsqueeze(1)], dim=1)  # [B, 2]
         lsm = F.log_softmax(logit_matrix, dim=1) # apply in the dim=1 
-        # loss = -1.0 * lsm[:, 0]
-        targets = torch.zeros(q_embs.size(0)).long().to('cuda:0')
-        loss = F.nll_loss(lsm, targets)
+        loss = -1.0 * lsm[:, 0]
+        
+        # nll loss
+        # targets = torch.zeros(q_embs.size(0)).long().to('cuda:0')
+        # loss = F.nll_loss(lsm, targets)
         return (loss.mean(),)
 
 class RobertaDot_NLL_LN(NLL, RobertaForSequenceClassification):
@@ -276,6 +277,7 @@ def get_tokenized(tokenizer, input):
     # return TensorDataset(input_ids, attention_masks, token_type_ids, input_to_id)
     return (input_ids, attention_masks, token_type_ids, input_to_id)
 
+
 def train(args, CFG, model, tokenizer, train_data):
     # setup
     train_passages = train_data['context']
@@ -289,27 +291,32 @@ def train(args, CFG, model, tokenizer, train_data):
     output_dir = "./ance_pretrained/"
     
     # optimizer, scheduler
-
     optimizer_grouped_parameters = optimizer_group(model)
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
-    t_total = len(train_data) // args.gradient_accumulation_steps * args.num_train_epochs
-    scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total)
-
+    
     if args.fp16:
         scaler = torch.cuda.amp.GradScaler(enabled=True)
     
     # training start!
     model.zero_grad()
-    step, global_step = 0, 0
-    _max_step = len(train_data)//args.per_device_train_batch_size//args.gradient_accumulation_steps * args.num_train_epochs
-    _update_step = len(train_data)//args.per_device_train_batch_size
-    print(f"total step: {_max_step}, update step: {_update_step}")
+    step, global_step = 0, -1
+    # _max_step = (len(train_data)//args.per_device_train_batch_size)//args.gradient_accumulation_steps * args.num_train_epochs
+    # _update_step = (len(train_data)//args.per_device_train_batch_size)//args.gradient_accumulation_steps
+    # print(f"t_total: {t_total}, total step: None, update step: 2")
+    
+    # get first train dataloader
+    
     # while global_step < args.max_steps:
-    while global_step < 3:
+    _update_step = 4
+    train_iterator = tqdm(range(int(args.num_train_epochs)), desc="Epoch")
+    for _ in train_iterator:
+        global_step += 1
+        
+    # while global_step < t_total:
         
         # if some steps
         # if step % args.gradient_accumulation_steps == 0:
-        if step % 10 == 0:
+        if global_step % _update_step == 0:
             # update p, q embeddings
             # p, q = (len(train), ) -> new_p_embs (len(train), S, H), new_p_embs_ids (len(train))
             new_p_embs, new_p_embs_ids = update_new_embedding(args, model, train_passages, tokenizer, is_query_inference=False)
@@ -329,60 +336,72 @@ def train(args, CFG, model, tokenizer, train_data):
             train_dataloader = DataLoader(next_train_dataset, batch_size=args.per_device_train_batch_size)
             train_dataloader_iter = iter(train_dataloader)
             # maybe you can re warmup schedulers here, too.
-        model.train()
-        # with tqdm(train_dataloader_iter, unit='batch') as tepoch:
-        #     for batch in tepoch:
-        # new batch
-        batch = next(train_dataloader_iter)
-        
-        batch = tuple(t.to(args.device) for t in batch)
-        step += 1
-        
-        # input
-        inputs = {"query_ids": batch[0].long(), "attention_mask_q": batch[1].long(),
-                "input_ids_a": batch[3].long(), "attention_mask_a": batch[4].long(),
-                "input_ids_b": batch[6].long(), "attention_mask_b": batch[7].long()}
-        
-        # output
-        if args.fp16:
-            with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
-                output = model(**inputs)   
-        
-        # loss
-        loss = output[0]
-        if args.gradient_accumulation_steps > 1:
-            loss = loss / args.gradient_accumulation_steps
-        
-        scaler.scale(loss).backward()
-        # tepoch.set_postfix(loss=f'{str(loss.item())}')
-        if step % args.gradient_accumulation_steps == 0:
-            scaler.step(optimizer)
-            scheduler.step()    # Update learning rate schedule
-            scaler.update()
-
-            model.zero_grad()
-            model.train()
-            torch.cuda.empty_cache()
+            t_total = len(train_dataloader) // args.gradient_accumulation_steps * _update_step
+            scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total)
             
-            global_step += 1
-            print(f"loss: {loss}")
-            wandb.log({"train/loss": loss, # "train/learning_rate": args.learning_rate})
-                        "train/learning_rate": optimizer.param_groups[0]['lr']})
+        # 대신 이 방식은 중간에 dataloader를 바꿀 수 없다.
+        with tqdm(train_dataloader, unit='batch') as tepoch:
+            for batch in tepoch:
+                step += 1
+                model.train()
 
-            # maybe eval here
+                # new batch
+                # batch = next(train_dataloader_iter)
             
-        if step % args.save_steps == 0:
-            # save checkpoint
-            model.save_pretrained(output_dir)
-            tokenizer.save_pretrained(output_dir)
-
-            # torch.save(args, os.path.join(output_dir, "training_args.bin"))
-            # torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
-            # torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
-            print(f"ance save checkpoint ...")
+                batch = tuple(t.to(args.device) for t in batch)
+                # step += 1
+            
+                # input
+                inputs = {"query_ids": batch[0].long(), "attention_mask_q": batch[1].long(),
+                        "input_ids_a": batch[3].long(), "attention_mask_a": batch[4].long(),
+                        "input_ids_b": batch[6].long(), "attention_mask_b": batch[7].long()}
                 
-    wandb.finish()            
-    return model            
+                # output
+                if args.fp16:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=True):
+                        output = model(**inputs)   
+                else:
+                    output = model(**inputs)
+                
+                # loss
+                loss = output[0]
+
+                if args.gradient_accumulation_steps > 1:
+                    loss = loss / args.gradient_accumulation_steps
+                
+                tepoch.set_postfix(loss=f'{str(loss.item())}')
+                
+                scaler.scale(loss).backward()
+                # tepoch.set_postfix(loss=f'{str(loss.item())}')
+                if step % args.gradient_accumulation_steps == 0:
+                    scaler.step(optimizer)
+                    
+                    scheduler.step()    # Update learning rate schedule
+                    scaler.update()
+
+                    model.zero_grad()
+                    model.train()
+                    torch.cuda.empty_cache()
+                    
+                    # global_step += 1
+                    # print(f"loss: {loss}")
+                    wandb.log({"train/loss": loss, # "train/learning_rate": args.learning_rate})
+                                "train/learning_rate": optimizer.param_groups[0]['lr']})
+
+                    # maybe eval here
+                    
+                if step % args.save_steps == 0:
+                    # save checkpoint
+                    model.save_pretrained(output_dir)
+                    tokenizer.save_pretrained(output_dir)
+
+                    # torch.save(args, os.path.join(output_dir, "training_args.bin"))
+                    # torch.save(optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
+                    # torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+                    print(f"ance save checkpoint ...")
+                
+    wandb.finish()
+    return model
                 
 if __name__ == '__main__':
     model_name = 'klue/roberta-base'
