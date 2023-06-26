@@ -1,3 +1,5 @@
+# baseline : https://github.com/boostcampaitech3/level2-mrc-level2-nlp-11
+
 import pandas as pd
 import torch.nn as nn
 import numpy as np
@@ -15,9 +17,6 @@ from transformers import (
     TrainingArguments,
     get_linear_schedule_with_warmup,
 )
-
-# baseline : https://github.com/boostcampaitech3/level2-mrc-level2-nlp-11
-
 
 def set_columns(dataset):
     dataset = pd.DataFrame(
@@ -41,6 +40,25 @@ def tokenize_colbert(dataset, tokenizer, corpus):
         preprocessed_data = []
         for query in dataset:
             preprocessed_data.append("[Q] " + query)
+
+        tokenized_query = tokenizer(
+            preprocessed_data, return_tensors="pt", padding='max_length', truncation=True, max_length=64
+        )
+        mask_token_ids = tokenized_query["input_ids"] == tokenizer.pad_token_id
+        tokenized_query["input_ids"] = tokenized_query["input_ids"].where(~mask_token_ids, tokenizer.mask_token_id)
+        
+        tokenized_query["attention_mask"] = torch.ones_like(tokenized_query["attention_mask"])
+        
+        if "token_type_ids" in tokenized_query:
+            tokenized_query["token_type_ids"] = torch.zeros_like(tokenized_query["token_type_ids"])
+        
+        return tokenized_query
+    
+    # for inference
+    elif corpus == "pseudo_query":
+        preprocessed_data = []
+        for document in dataset:
+            preprocessed_data.append("[Q] " + document)
 
         tokenized_query = tokenizer(
             preprocessed_data, return_tensors="pt", padding='max_length', truncation=True, max_length=64
