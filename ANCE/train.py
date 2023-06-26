@@ -12,6 +12,7 @@ import os
 import faiss
 import wandb
 import torch
+import Levenshtein
 import numpy as np
 import torch.nn.functional as F
 
@@ -119,8 +120,7 @@ class NLL(EmbeddingMixin):
         # nll loss
         logit_matrix = torch.cat([(q_embs * a_embs).sum(-1).unsqueeze(1), (q_embs * b_embs).sum(-1).unsqueeze(1)], dim=1)  # [B, 2]
         lsm = F.log_softmax(logit_matrix, dim=1) # apply in the dim=1 
-        loss = -1.0 * lsm[:, 0]
-        
+        loss = -1.0 * lsm[:, 0]     
         # nll loss
         # targets = torch.zeros(q_embs.size(0)).long().to('cuda:0')
         # loss = F.nll_loss(lsm, targets)
@@ -228,7 +228,12 @@ def generate_nagative_ids(args, new_p_embs_ids, new_q_embs_ids, positive_passage
         for idx in selected_ann_idx:
             neg_pid = new_p_embs_ids[idx]
             
-            if neg_pid == positive_pid:
+            # Levenshtein distance -> 문맥적 내용이 거의 비슷한 중복 문서 제거
+            neg_passage = positive_passage[neg_pid]
+            pos_passage = positive_passage[positive_pid]
+            dist = Levenshtein.distance(neg_passage, pos_passage)      
+
+            if neg_pid == positive_pid or dist < min(len(neg_passage), len(pos_passage))//10*2:
                 continue
             if neg_cnt >= args.negative_samples:
                 break
@@ -254,8 +259,8 @@ def make_next_dataset(tokenizer, queries, passages, neg_ids):
     # 막 tensordataset으로 뭘 하던데... 그냥 split해서 읽어들인거 int형태로 바꾸고 tensor dataset으로 반환한다.
     
     # 텐서화.. 으음. 클래스화 해서 ANCE는 아예 custom dataset을 만들었구나.
-    neg_passages = [passages[ids] for ids in neg_ids]
-    
+    neg_passages = [passages[ids[0]] for _, ids in neg_ids.items()]
+    breakpoint()
     query_data = get_tokenized(tokenizer, queries)
     pos_data = get_tokenized(tokenizer, passages)
     neg_data = get_tokenized(tokenizer, neg_passages)
